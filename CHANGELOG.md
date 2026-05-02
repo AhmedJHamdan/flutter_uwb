@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0
+## 0.2.0+1
 
 Cross-platform v2: a single BLE GATT transport on both platforms plus
 accessory-mode ranging via Apple's FiRa accessory BLE protocol.

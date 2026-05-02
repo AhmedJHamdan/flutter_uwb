@@ -3,6 +3,7 @@ description: Cross-OS BLE OOB + UWB ranging (Android Jetpack UWB, iOS Nearby Int
 version: 0.2.0+1
 homepage: https://github.com/AhmedJHamdan/flutter_uwb
 repository: https://github.com/AhmedJHamdan/flutter_uwb
+publish_to: https://pub.dev
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

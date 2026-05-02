@@ -53,7 +53,7 @@ example/android/local.properties
 example/pubspec.lock
 
 # Internal agent/planning docs
-docs/agents/
+doc/agents/
 
 # AI assistant config files
 CLAUDE.md

@@ -126,7 +126,7 @@ class FlutterUwb {
   /// Returns the local platform-specific OOB token.
   ///
   /// On Android the bytes are the 9-byte little-endian blob described in
-  /// `lib/src/pigeon/uwb_api.dart`. On iOS the bytes are an
+  /// `pigeons/uwb_api.dart`. On iOS the bytes are an
   /// `NSKeyedArchiver`-encoded `NIDiscoveryToken`.
   Future<Uint8List> getLocalToken(UwbRole role) async {
     final t = await _api.getLocalToken(role);
