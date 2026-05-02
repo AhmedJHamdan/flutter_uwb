@@ -17,6 +17,7 @@ ranging itself runs on Jetpack UWB on Android and NearbyInteraction
   s.author           = { 'Ahmed Hamdan' => 'contact@ahmedhamdan.com' }
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
+  s.resource_bundles = {'flutter_uwb_privacy' => ['Resources/PrivacyInfo.xcprivacy']}
   s.dependency 'Flutter'
   s.platform         = :ios, '14.0'
   s.frameworks       = 'NearbyInteraction', 'CoreBluetooth'

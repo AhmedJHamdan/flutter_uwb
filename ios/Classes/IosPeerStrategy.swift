@@ -16,12 +16,8 @@ final class IosPeerStrategy: NSObject, RangingStrategy, NISessionDelegate {
   private let flutterApi: UwbFlutterApi
   private var session: NISession?
 
-  /// - Parameters:
-  ///   - deviceId: Stable peer id used for sample routing on the Dart side.
-  ///   - peerTokenBytes: NSKeyedArchiver-encoded `NIDiscoveryToken` from the
-  ///     peer (received over BLE during the OOB exchange).
-  ///   - flutterApi: Pigeon API used to push samples / errors / peer-lost
-  ///     events into Dart.
+  /// - Parameter peerTokenBytes: `NSKeyedArchiver`-encoded `NIDiscoveryToken`
+  ///   from the peer, received over BLE during the OOB exchange.
   init(
     deviceId: String,
     peerTokenBytes: Data,

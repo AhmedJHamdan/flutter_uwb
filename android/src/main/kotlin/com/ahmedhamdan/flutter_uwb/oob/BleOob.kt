@@ -65,9 +65,7 @@ class BleOob(private val ctx: Context) {
     private val CHAR_NOTIFY = UUID.fromString("c9a0a82b-0c5a-4b8e-9e2e-5dbe2d08f7c3")
     private val CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-    /** Registered accessory profiles; populated by [setAccessoryProfiles]. */
     private var accessoryProfiles: List<AccessoryProfile> = emptyList()
-    /** Tx characteristic per profile, populated when the GATT server is up. */
     private val accessoryTxChars = HashMap<UUID, BluetoothGattCharacteristic>()
 
     private val btMgr by lazy { ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager }
@@ -78,9 +76,7 @@ class BleOob(private val ctx: Context) {
     private var gattServer: BluetoothGattServer? = null
     private var clientGatt: BluetoothGatt? = null
 
-    /** Centrals that have written to us, keyed by address. */
     private val pendingCentrals = HashMap<String, BluetoothDevice>()
-    /** Already-reported scan addresses so we don't spam onDeviceFound. */
     private val seenAdvertisers = HashSet<String>()
 
     private val advertiseCallback = object : AdvertiseCallback() {
@@ -174,10 +170,6 @@ class BleOob(private val ctx: Context) {
         }
         gattServer?.addService(service)
 
-        // Add accessory-mode services (one per registered profile) so an
-        // iPhone-host or Apple-protocol accessory can connect to Android
-        // and drive the multi-message exchange against the controlee
-        // strategy.
         accessoryTxChars.clear()
         for (profile in accessoryProfiles) {
             val accessoryService = BluetoothGattService(
@@ -214,10 +206,6 @@ class BleOob(private val ctx: Context) {
         val adData = AdvertiseData.Builder()
             .setIncludeDeviceName(true)
             .addServiceUuid(ParcelUuid(SVC))
-        // Include the first registered accessory profile's UUID in the
-        // ad packet. Multi-profile advertising is constrained by the
-        // 31-byte ad budget; for now a single profile is enough for the
-        // v2 cross-platform path.
         accessoryProfiles.firstOrNull()?.let {
             adData.addServiceUuid(ParcelUuid(it.serviceUuid))
         }
@@ -274,8 +262,6 @@ class BleOob(private val ctx: Context) {
      */
     fun accessoryNotify(deviceId: String, bytes: ByteArray) {
         val device = pendingCentrals[deviceId] ?: return
-        // The Tx char is the first registered accessory profile's tx char
-        // — multi-profile fan-out lives in a follow-up.
         val tx = accessoryTxChars.values.firstOrNull() ?: return
         notify(device, tx, bytes)
     }

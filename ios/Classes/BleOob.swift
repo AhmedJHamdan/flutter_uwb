@@ -5,47 +5,27 @@ import Foundation
 ///
 /// Two roles in one class:
 ///
-/// - **Peer mode** (the v1 baseline). Mirrors `BleOob.kt` on Android: the
-///   custom flutter_uwb service UUID, advertise + scan simultaneously,
-///   one-shot `exchange(...)` for token swap. Used for iOS↔iOS and iOS↔Android
-///   *peer*-style ranging.
+/// - **Peer mode** — mirrors `BleOob.kt` on Android: the custom flutter_uwb
+///   service UUID, advertise + scan simultaneously, one-shot `exchange(...)`
+///   for token swap.
 ///
-/// - **Accessory mode** (Phase C+). Scans for additional Apple-FiRa accessory
-///   service UUIDs in parallel. When a peripheral matches an accessory
-///   profile, `onAccessoryFound` fires instead of `onDeviceFound`. The host
-///   then drives a long-lived connection via `accessoryConnect / accessoryWrite
-///   / accessoryDisconnect`, with the accessory's notify characteristic
-///   bytes streaming in through `onAccessoryNotify`. The host owns the
-///   message protocol; this class only carries bytes.
-///
-/// Topology (peer mode)
-/// - Each instance runs a `CBPeripheralManager` (advertises the service +
-///   hosts a GATT server with a write + a notify characteristic) **and** a
-///   `CBCentralManager` (scans for the same service + acts as a GATT client).
-/// - Whichever side initiates `exchange()` becomes the GATT client; the
-///   other side receives the write at its server, fires `onIncomingRequest`,
-///   and replies via NOTIFY when the app calls `accept(deviceId:myToken:)`.
-///
-/// Device identifiers are platform-local UUIDs:
-///   - On the central side, `deviceId` is `CBPeripheral.identifier.uuidString`.
-///   - On the peripheral side, `deviceId` is `CBCentral.identifier.uuidString`.
-///   Each side never compares its `deviceId` to the peer's view; Dart only
-///   addresses peers using its own local id.
+/// - **Accessory mode** — scans for additional Apple-FiRa accessory service
+///   UUIDs in parallel. When a peripheral matches a registered profile,
+///   `onAccessoryFound` fires; the host then drives a long-lived connection
+///   via `accessoryConnect / accessoryWrite / accessoryDisconnect`, with bytes
+///   streaming in through `onAccessoryNotify`.
 ///
 /// Foreground only. iOS BLE peripheral mode does not include the service UUID
-/// in the main advertising packet while backgrounded; v2's contract is
-/// foreground-only ranging.
+/// in the main advertising packet while backgrounded.
 @available(iOS 14.0, *)
 final class BleOob: NSObject {
   // MARK: - Public surface
 
   /// Vendor-specific BLE profile for an Apple-FiRa accessory.
   ///
-  /// The protocol's *byte format* is fixed (see `apple_protocol.dart`), but
-  /// the BLE service / characteristic UUIDs are vendor-chosen — Apple's
-  /// WWDC 2022 sample uses one set, real accessories ship others. The host
-  /// passes the relevant tuple to `start(...)`; Phase E will surface this
-  /// configuration to Dart via `registerAccessoryAdapter`.
+  /// The protocol's byte format is fixed (see `apple_protocol.dart`), but
+  /// the BLE service / characteristic UUIDs are vendor-chosen. Pass the
+  /// relevant UUIDs to `registerAccessoryProfile` from Dart.
   struct AccessoryProfile: Equatable {
     let serviceUuid: CBUUID
     /// Characteristic the iPhone writes to (accessory's "Rx").
@@ -89,14 +69,8 @@ final class BleOob: NSObject {
   private var central: CBCentralManager?
   private var peripheral: CBPeripheralManager?
 
-  /// Read by the host so callers can re-issue `start(...)` while keeping
-  /// the existing localName.
   private(set) var localName: String = "ios"
-  /// Read by the host to know whether scanning/advertising is active.
   private(set) var started = false
-  // Flags set by `start()` and consumed when each manager reaches
-  // `.poweredOn`. The two managers come up asynchronously so we cannot
-  // begin scanning/advertising synchronously from `start`.
   private var wantsScan = false
   private var wantsAdvertise = false
 

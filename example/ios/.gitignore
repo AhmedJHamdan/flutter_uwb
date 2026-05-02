@@ -32,3 +32,10 @@ Runner/GeneratedPluginRegistrant.*
 !default.mode2v3
 !default.pbxuser
 !default.perspectivev3
+
+# Podfile.lock (plugin example lock files are not committed)
+Podfile.lock
+
+# Xcode IDE workspace state files (machine-local, differ per Xcode version)
+**/xcshareddata/IDEWorkspaceChecks.plist
+**/xcshareddata/WorkspaceSettings.xcsettings

@@ -9,19 +9,6 @@
 /// path: the Android side speaks Apple's protocol so the iPhone perceives it
 /// as just another accessory.
 ///
-/// ## Wire format
-///
-/// Every message is `[messageId: u8] [payload: bytes...]`. The first byte
-/// identifies the message; everything after is opaque per-message payload.
-///
-/// Empty-payload messages are exactly 1 byte. `AccessoryConfigurationData`
-/// and `ConfigureAndStart` carry variable-length opaque payloads that the
-/// platform's NearbyInteraction framework consumes verbatim — the codec does
-/// not interpret them.
-///
-/// BLE-level fragmentation across the GATT MTU is handled by the transport,
-/// not by this codec. Decode is called with the fully reassembled message.
-///
 /// ## Direction matrix
 ///
 /// | Message id | Direction              | Body                              |
@@ -138,10 +125,8 @@ sealed class AppleAccessoryMessage {
     return value;
   }
 
-  /// Helper for subclasses that emit a single-byte (id-only) message.
   Uint8List _encodeIdOnly() => Uint8List.fromList([id.value]);
 
-  /// Helper for subclasses that emit `[id, ...payload]`.
   Uint8List _encodeWithPayload(Uint8List payload) {
     final out = Uint8List(1 + payload.length);
     out[0] = id.value;
@@ -153,12 +138,9 @@ sealed class AppleAccessoryMessage {
 /// `0x01` accessory → iPhone. Carries the accessory's
 /// `NINearbyAccessoryConfiguration` data blob.
 final class AccessoryConfigurationData extends AppleAccessoryMessage {
-  /// Construct with the raw configuration bytes that the iPhone will hand
-  /// to `NINearbyAccessoryConfiguration(data:)`.
   AccessoryConfigurationData(Uint8List configData)
     : configData = Uint8List.fromList(configData);
 
-  /// Opaque configuration bytes produced by the accessory's UWB stack.
   final Uint8List configData;
 
   @override
@@ -208,13 +190,9 @@ final class Initialize extends AppleAccessoryMessage {
 /// `0x0B` iPhone → accessory. Hands the accessory the iPhone's
 /// `NINearbyAccessoryConfiguration` shareable data and asks it to start.
 final class ConfigureAndStart extends AppleAccessoryMessage {
-  /// Construct with the iPhone-generated session parameters that the
-  /// accessory must apply to its UWB radio.
   ConfigureAndStart(Uint8List shareableConfigData)
     : shareableConfigData = Uint8List.fromList(shareableConfigData);
 
-  /// Opaque session parameters produced by the iPhone's
-  /// `NINearbyAccessoryConfiguration`.
   final Uint8List shareableConfigData;
 
   @override

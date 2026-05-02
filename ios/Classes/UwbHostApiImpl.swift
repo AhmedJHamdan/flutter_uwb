@@ -25,25 +25,14 @@ extension FlutterError: Error {}
 final class UwbHostApiImpl: NSObject, UwbHostApi {
   private let flutterApi: UwbFlutterApi
 
-  /// BLE OOB transport. One instance for the lifetime of the plugin.
   private let ble = BleOob()
 
   /// Devices observed via BLE OOB, keyed by BLE id.
   private var discovered: [String: UwbDevice] = [:]
 
-  /// Peer tokens, keyed by BLE id. Populated by the peripheral path on
-  /// incoming-write and by the central path when an exchange settles.
   private var peerTokens: [String: Data] = [:]
-
-  /// In-flight `exchangeTokens` completions, keyed by BLE id.
   private var pendingExchanges: [String: (Result<TokenPayload, Error>) -> Void] = [:]
-
-  /// NI session that owns the local `NIDiscoveryToken` returned from
-  /// `getLocalToken`. Reused on subsequent calls. Distinct from any session
-  /// owned by an active ranging strategy.
   private var localTokenSession: NISession?
-
-  /// Active ranging strategy, if any. One at a time.
   private var activeStrategy: RangingStrategy?
 
   init(messenger: FlutterBinaryMessenger) {
@@ -54,9 +43,6 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
 
   // MARK: - Accessory profiles
 
-  /// Accessory profiles registered from Dart, keyed by service UUID
-  /// (uppercase, hyphenated). `vendorTag` (when present) becomes the
-  /// suffix of `UwbDevice.platform = "accessory:<tag>"`.
   private struct RegisteredProfile {
     let bleProfile: BleOob.AccessoryProfile
     let vendorTag: String?
@@ -180,9 +166,8 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
   }
 
   func getLocalToken(role: UwbRole, completion: @escaping (Result<TokenPayload, Error>) -> Void) {
-    // On iOS the role does not affect the token: NI sessions are symmetric
-    // and `NIDiscoveryToken` is opaque. We return the discovery token of a
-    // session held purely for this purpose.
+    // On iOS the role does not affect the token: NIDiscoveryToken is opaque
+    // and NI sessions are symmetric.
     let session = localTokenSession ?? NISession()
     localTokenSession = session
     guard let token = session.discoveryToken else {
@@ -307,10 +292,6 @@ extension UwbHostApiImpl: BleOob.Callback {
   }
 
   func onIncomingRequest(id: String, name: String, peerToken: Data) {
-    // Mirror the Android peripheral path: accept a write as both a
-    // discovery signal and a token-bearing event. The peer's token is
-    // already in `peerToken`; cache it so `startRanging` works once Dart
-    // calls `acceptRequest`.
     let device = UwbDevice(id: id, name: name, platform: "ios")
     let isNew = discovered[id] == nil
     discovered[id] = device
@@ -321,9 +302,7 @@ extension UwbHostApiImpl: BleOob.Callback {
   }
 
   func onConnected(id: String, name: String) {
-    // The actual data carriage already happened. No surfacing to Dart;
-    // `exchangeTokens` resolves via the `onPeer` callback, and
-    // `acceptRequest` returns a success synchronously.
+    // no-op
   }
 
   func onDisconnected(id: String, name: String) {

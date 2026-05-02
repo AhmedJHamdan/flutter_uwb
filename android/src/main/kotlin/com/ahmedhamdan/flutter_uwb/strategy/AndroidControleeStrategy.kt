@@ -12,7 +12,7 @@ import com.ahmedhamdan.flutter_uwb.RangingSample
 import com.ahmedhamdan.flutter_uwb.UwbFlutterApi
 import com.ahmedhamdan.flutter_uwb.accessory.AppleProtocol
 import com.ahmedhamdan.flutter_uwb.oob.BleOob
-import kotlin.random.Random
+import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.catch
@@ -20,40 +20,24 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 /**
- * Android-as-controlee against an iPhone host (or any host that speaks
- * Apple's FiRa accessory BLE protocol).
+ * Android-as-controlee against an iPhone host speaking Apple's FiRa
+ * accessory BLE protocol. Mirrors [IosAccessoryStrategy] on the accessory
+ * side.
  *
- * In this mode the iPhone is the *controller* and Android is the
- * *controlee*. Android advertises on the registered accessory service
- * UUID; the iPhone scans, connects, and drives the multi-message
- * exchange. Android replies and runs `controleeSessionScope.prepareSession`
- * on its end.
+ * Byte layouts for [AppleProtocol] payloads are unverified against real
+ * hardware — see TODO(verify) markers in [AppleProtocol] and below.
  *
  * ## Pairing flow
  *
- * 1. Android registers an [com.ahmedhamdan.flutter_uwb.AccessoryProfile]
- *    via `registerAccessoryProfile`. `BleOob` advertises the service +
- *    Tx/Rx characteristics.
- * 2. iPhone connects, subscribes to Tx, writes `Initialize` (0x0A) to Rx.
- * 3. `BleOob` invokes [handleAccessoryRequest] with the bytes. Strategy
- *    builds an `AccessoryConfigurationData` (0x01) payload describing
- *    Android's UWB session params and pushes it back via
- *    [BleOob.accessoryNotify].
- * 4. iPhone runs its `NISession` to derive shareable config bytes, then
- *    writes `ConfigureAndStart` (0x0B) to Rx.
- * 5. Strategy parses the shareable bytes into `RangingParameters` and
- *    runs `controleeSessionScope.prepareSession(params).collect`.
- * 6. Android pushes `AccessoryUwbDidStart` (0x02) once the radio is up.
- * 7. Samples flow through `flutterApi.onRangingSample`.
- *
- * ## Hardware verification gap
- *
- * The byte layouts for `AccessoryConfigurationData` and the shareable
- * portion of `ConfigureAndStart` are not formally documented by Apple
- * — they are defined by what `NINearbyAccessoryConfiguration(data:)`
- * accepts and emits. Until verified against an iPhone↔Android UWB
- * pairing, the mapping below is a best-effort placeholder. Look for
- * `TODO(verify)` markers in [AppleProtocol] and below.
+ * 1. [start] acquires a [UwbControleeSessionScope] and waits for BLE.
+ * 2. iPhone writes `Initialize` (0x0A) → reply with `AccessoryConfigurationData`
+ *    (0x01) containing session id, channel, preamble, and short address.
+ * 3. iPhone writes `ConfigureAndStart` (0x0B + shareable config) →
+ *    [runControleeSession] starts the UWB radio; notify `AccessoryUwbDidStart`
+ *    (0x02).
+ * 4. UWB ranging runs; samples stream through [emitRangingResult].
+ * 5. iPhone writes `Stop` (0x0C) → [stop] is called; reply with
+ *    `AccessoryUwbDidStop` (0x03).
  */
 class AndroidControleeStrategy(
     override val deviceId: String,
@@ -80,11 +64,9 @@ class AndroidControleeStrategy(
     private var sessionId: Int = 0
 
     override suspend fun start() {
-        // Ensure we have a UWB controlee scope ready before iPhone
-        // connects, so the AccessoryConfigurationData payload reflects
-        // real radio state.
+        // Acquire scope before iPhone connects.
         controleeScope = uwbManager.controleeSessionScope()
-        sessionId = Random.nextInt(1, Int.MAX_VALUE)
+        sessionId = SecureRandom().nextInt(Int.MAX_VALUE - 1) + 1
         state = State.AwaitingInitialize
     }
 
@@ -106,11 +88,6 @@ class AndroidControleeStrategy(
         state = State.Idle
     }
 
-    /**
-     * Called by the host when the iPhone writes Apple-protocol bytes to
-     * Android's Rx characteristic. Bytes are a fully-reassembled
-     * message; this method dispatches on byte 0.
-     */
     suspend fun handleAccessoryRequest(bytes: ByteArray) {
         val id = AppleProtocol.decodeId(bytes)
         val payload = AppleProtocol.decodePayload(bytes)

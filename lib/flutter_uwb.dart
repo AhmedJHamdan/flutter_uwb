@@ -62,7 +62,7 @@ class FlutterUwb {
   Future<VoidResult> startDiscovery(String localName) =>
       _api.startDiscovery(localName);
 
-  /// Stop BLE OOB discovery and release the underlying scan/advertise handles.
+  /// Stop BLE OOB discovery.
   Future<VoidResult> stopDiscovery() => _api.stopDiscovery();
 
   /// Snapshot of all peers discovered since the last [startDiscovery] call.
@@ -110,12 +110,18 @@ class FlutterUwb {
   ///
   /// Sends [myToken] to the peer and returns the peer's token. Both sides must
   /// call this before starting a UWB session.
+  ///
+  /// Throws [StateError] if the platform returns an empty token.
   Future<Uint8List> exchangeTokens(String deviceId, Uint8List myToken) async {
     final out = await _api.exchangeTokens(
       deviceId,
       TokenPayload(bytes: myToken),
     );
-    return out.bytes ?? Uint8List(0);
+    final bytes = out.bytes;
+    if (bytes == null || bytes.isEmpty) {
+      throw StateError('exchangeTokens: platform returned null or empty token');
+    }
+    return bytes;
   }
 
   // -------- UWB --------
@@ -130,7 +136,11 @@ class FlutterUwb {
   /// `NSKeyedArchiver`-encoded `NIDiscoveryToken`.
   Future<Uint8List> getLocalToken(UwbRole role) async {
     final t = await _api.getLocalToken(role);
-    return t.bytes ?? Uint8List(0);
+    final bytes = t.bytes;
+    if (bytes == null || bytes.isEmpty) {
+      throw StateError('getLocalToken: platform returned null or empty token');
+    }
+    return bytes;
   }
 
   /// Begin a UWB ranging session with [deviceId].
@@ -186,7 +196,6 @@ class _FlutterApiHandler extends UwbFlutterApi {
 }
 
 // -------- Backwards-compatible top-level functions --------
-// These delegate to FlutterUwb.instance for callers that prefer a flat API.
 final FlutterUwb _instance = FlutterUwb.instance;
 
 Future<VoidResult> startDiscovery(String localName) =>

@@ -5,10 +5,9 @@ import NearbyInteraction
 /// iOS↔accessory ranging via Apple's FiRa accessory BLE protocol.
 ///
 /// The protocol is documented in `lib/src/accessory/apple_protocol.dart` and
-/// in Apple's WWDC 2022 sample *"Implementing Spatial Interactions with
-/// Third-Party Accessories Using the U1 Chip"*. This class drives the
-/// handshake on the iPhone (controller) side. The matching Android-side
-/// implementation lives in Phase D.
+/// Apple's WWDC 2022 *"Implementing Spatial Interactions with Third-Party
+/// Accessories Using the U1 Chip"*. This class drives the handshake on the
+/// iPhone (controller) side.
 ///
 /// ## Pairing flow
 ///
@@ -26,8 +25,7 @@ import NearbyInteraction
 ///    already running; samples flow through `session(_:didUpdate:)`.
 /// 7. `stop()` invalidates the session, writes `Stop` (0x0C), and disconnects.
 ///
-/// `NINearbyAccessoryConfiguration` is iOS 15+; this strategy is gated
-/// accordingly. Older devices fall back to peer-mode only.
+/// Requires iOS 15+; older devices fall back to peer-mode only.
 @available(iOS 15.0, *)
 final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
   let deviceId: String
@@ -46,13 +44,8 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
   }
   private var state: State = .idle
 
-  /// - Parameters:
-  ///   - deviceId: Stable peer id used for sample routing on the Dart side.
-  ///   - flutterApi: Pigeon API used to push samples / errors / peer-lost
-  ///     events into Dart.
-  ///   - ble: BLE OOB transport. Strategy holds a weak reference because
-  ///     `BleOob` is owned by the host plugin and outlives any single
-  ///     ranging session.
+  /// - Parameter ble: Held weakly because `BleOob` is owned by the host
+  ///   plugin and outlives any single ranging session.
   init(
     deviceId: String,
     flutterApi: UwbFlutterApi,
@@ -91,8 +84,7 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
   // MARK: - Inbound BLE notifications
 
   /// Called by the host when the BLE transport delivers bytes from the
-  /// accessory's Tx characteristic. Bytes are a fully-reassembled message;
-  /// `handleAccessoryNotify` parses byte 0 as the message id and dispatches.
+  /// accessory's Tx characteristic.
   func handleAccessoryNotify(_ bytes: Data) {
     guard let id = bytes.first else { return }
     let payload = bytes.count > 1
@@ -107,14 +99,12 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
         s.delegate = self
         self.session = s
         s.run(config)
-        // didGenerateShareableConfigurationData fires next.
       } catch {
         fail("NINearbyAccessoryConfiguration: \(error.localizedDescription)")
       }
 
     case (.awaitingDidStart, .accessoryUwbDidStart):
       state = .ranging
-      // Sample stream is already arriving via NISessionDelegate.
 
     case (.ranging, .accessoryUwbDidStop):
       // Accessory tore the radio down on its end. Treat as peer lost.
@@ -189,9 +179,7 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
   }
 }
 
-/// Mirror of the Dart `AppleAccessoryMessageId` enum, kept in Swift so the
-/// strategy can dispatch on byte 0 without round-tripping through Pigeon on
-/// every BLE event.
+/// Mirror of `AppleAccessoryMessageId` in `apple_protocol.dart`.
 enum AccessoryMessageId: UInt8 {
   case accessoryConfigurationData = 0x01
   case accessoryUwbDidStart = 0x02

@@ -15,7 +15,7 @@ import com.ahmedhamdan.flutter_uwb.UwbFlutterApi
 import com.ahmedhamdan.flutter_uwb.UwbRole
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.random.Random
+import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.catch
@@ -81,7 +81,6 @@ class AndroidPeerStrategy(
         peer: Token.Fields,
     ): Pair<UwbClientSessionScope, RangingParameters> = when (peer.role) {
         UwbRole.CONTROLLER -> {
-            // Peer is controller -> I am controlee. Use peer's channel/sessionId.
             val scope = controleeScope
                 ?: uwbManager.controleeSessionScope().also { controleeScope = it }
             val params = RangingParameters(
@@ -102,13 +101,12 @@ class AndroidPeerStrategy(
             scope to params
         }
         UwbRole.CONTROLEE -> {
-            // Peer is controlee -> I am controller. Use my channel/sessionId.
             val scope = controllerScope
                 ?: uwbManager.controllerSessionScope().also { controllerScope = it }
             val params = RangingParameters(
                 RangingParameters.CONFIG_UNICAST_DS_TWR,
                 if (localSessionId != 0) localSessionId
-                else Random.nextInt(1, Int.MAX_VALUE).also { localSessionId = it },
+                else (SecureRandom().nextInt(Int.MAX_VALUE - 1) + 1).also { localSessionId = it },
                 0,
                 null,
                 null,

@@ -16,7 +16,7 @@ import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
-import kotlin.random.Random
+import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,12 +54,11 @@ class UwbHostApiImpl(
     private val discovered = LinkedHashMap<String, UwbDevice>()
 
     private var uwbManager: UwbManager? = null
-    /** Cached for [getLocalToken]; not used by strategies. */
+    // not used by strategies
     private var controllerScope: UwbControllerSessionScope? = null
     private var controleeScope: UwbControleeSessionScope? = null
     private var localSessionId: Int = 0
 
-    /** Currently active ranging strategy, if any. */
     private var activeStrategy: RangingStrategy? = null
 
     init {
@@ -71,13 +70,13 @@ class UwbHostApiImpl(
                 if (isNew) flutterApi.onDeviceFound(device) {}
             }
             override fun onIncomingRequest(id: String, name: String) {
-                Log.d(tag, "Incoming BLE request from $name ($id)")
+                Log.d(tag, "Incoming BLE request from $name")
             }
             override fun onConnected(id: String, name: String) {
-                Log.d(tag, "BLE tokens exchanged with $name ($id)")
+                Log.d(tag, "BLE tokens exchanged with $name")
             }
             override fun onDisconnected(id: String, name: String) {
-                Log.d(tag, "BLE disconnected $name ($id)")
+                Log.d(tag, "BLE disconnected $name")
                 if (discovered.remove(id) != null) {
                     flutterApi.onDeviceLost(id) {}
                 }
@@ -267,7 +266,7 @@ class UwbHostApiImpl(
                     UwbRole.CONTROLLER -> {
                         val scope = mgr.controllerSessionScope()
                         controllerScope = scope
-                        localSessionId = Random.nextInt(1, Int.MAX_VALUE)
+                        localSessionId = SecureRandom().nextInt(Int.MAX_VALUE - 1) + 1
                         Token.build(
                             role = UwbRole.CONTROLLER,
                             addr = scope.localAddress.address,
@@ -329,7 +328,7 @@ class UwbHostApiImpl(
                 activeStrategy = null
                 callback(Result.success(VoidResult(
                     ok = false,
-                    error = t.message ?: "startRanging error",
+                    error = "startRanging failed",
                 )))
             }
         }
