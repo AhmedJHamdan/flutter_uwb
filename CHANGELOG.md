@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0
+
+### Changed
+
+- All mutating methods now throw `UwbException` on failure instead of
+  returning `VoidResult`. Affected: `startDiscovery`, `stopDiscovery`,
+  `acceptRequest`, `declineRequest`, `registerAccessoryProfile`,
+  `unregisterAccessoryProfile`, `startRanging`, `stopRanging`.
+- `getLocalToken` and `exchangeTokens` now throw `UwbException` instead
+  of `StateError` for consistency.
+- `VoidResult` is no longer exported from the public API.
+
+### Added
+
+- `pairWith(String deviceId, {UwbRole role})` — convenience method that
+  combines `getLocalToken` + `exchangeTokens` in a single call.
+
+See [`doc/migration-v2-to-v3.md`](doc/migration-v2-to-v3.md) for the
+full migration guide.
+
 ## 0.2.0+1
 
 Cross-platform v2: a single BLE GATT transport on both platforms plus

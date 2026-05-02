@@ -95,9 +95,9 @@ class _HomeState extends State<_Home> {
       final available = await _uwb.isUwbAvailable();
       if (!mounted) return;
       setState(() => _uwbAvailable = available);
-    } catch (e) {
+    } on UwbException catch (e) {
       if (!mounted) return;
-      setState(() => _error = 'isUwbAvailable failed: $e');
+      setState(() => _error = 'isUwbAvailable failed: ${e.message}');
     }
   }
 
@@ -105,8 +105,8 @@ class _HomeState extends State<_Home> {
     if (_scanning) {
       try {
         await _uwb.stopDiscovery();
-      } catch (e) {
-        if (mounted) setState(() => _error = 'stopDiscovery failed: $e');
+      } on UwbException catch (e) {
+        if (mounted) setState(() => _error = e.message);
       }
       if (mounted) {
         setState(() {
@@ -118,23 +118,15 @@ class _HomeState extends State<_Home> {
     }
 
     try {
-      final result = await _uwb.startDiscovery('demo');
-      if (!(result.ok ?? false)) {
-        if (mounted) {
-          setState(() => _error = 'startDiscovery: ${result.error ?? "unknown"}');
-        }
-        return;
+      await _uwb.startDiscovery('demo');
+      if (mounted) {
+        setState(() {
+          _scanning = true;
+          _error = null;
+        });
       }
-    } catch (e) {
-      if (mounted) setState(() => _error = 'startDiscovery threw: $e');
-      return;
-    }
-
-    if (mounted) {
-      setState(() {
-        _scanning = true;
-        _error = null;
-      });
+    } on UwbException catch (e) {
+      if (mounted) setState(() => _error = e.message);
     }
   }
 
@@ -142,26 +134,14 @@ class _HomeState extends State<_Home> {
     final id = device.id;
     if (id == null) return;
     try {
-      final myToken = await _uwb.getLocalToken(UwbRole.controller);
-      final peer = await _uwb.exchangeTokens(id, myToken);
+      await _uwb.pairWith(id);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Got ${peer.length}-byte token from ${device.name}')),
-      );
-      final res = await _uwb.startRanging(id);
-      if (!(res.ok ?? false)) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('startRanging: ${res.error ?? "unknown"}')),
-          );
-        }
-        return;
-      }
+      await _uwb.startRanging(id);
       if (mounted) setState(() => _activeRangingId = id);
-    } catch (e) {
+    } on UwbException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('pair/range failed: $e')),
+        SnackBar(content: Text(e.message)),
       );
     }
   }
@@ -169,7 +149,7 @@ class _HomeState extends State<_Home> {
   Future<void> _stopRanging() async {
     try {
       await _uwb.stopRanging();
-    } catch (_) {}
+    } on UwbException catch (_) {}
     if (mounted) {
       setState(() {
         _activeRangingId = null;
@@ -212,7 +192,7 @@ class _HomeState extends State<_Home> {
               Card(
                 color: Theme.of(context).colorScheme.primaryContainer,
                 child: ListTile(
-                  title: Text('Ranging ${_activeRangingId!}'),
+                  title: Text('Ranging $_activeRangingId'),
                   subtitle: Text(_lastSample == null
                       ? 'waiting for first sample…'
                       : 'distance: ${_lastSample!.distanceMeters?.toStringAsFixed(2) ?? "?"} m'
@@ -239,7 +219,9 @@ class _HomeState extends State<_Home> {
                           ListTile(
                             leading: const Icon(Icons.phone_android),
                             title: Text(d.name ?? 'Unnamed'),
-                            subtitle: Text('${d.platform ?? "?"} · ${d.id ?? "?"}'),
+                            subtitle: Text(
+                              '${d.platform ?? "?"} · ${d.id ?? "?"}',
+                            ),
                             trailing: TextButton(
                               onPressed: () => _pairAndRange(d),
                               child: const Text('Pair & range'),

@@ -4,13 +4,17 @@ import 'dart:typed_data';
 import 'src/pigeon/uwb.g.dart';
 
 export 'src/pigeon/uwb.g.dart'
-    show
-        AccessoryProfile,
-        RangingSample,
-        TokenPayload,
-        UwbDevice,
-        UwbRole,
-        VoidResult;
+    show AccessoryProfile, RangingSample, TokenPayload, UwbDevice, UwbRole;
+
+/// Thrown by [FlutterUwb] when a platform operation fails.
+class UwbException implements Exception {
+  const UwbException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'UwbException: $message';
+}
 
 /// Public Dart facade for the flutter_uwb plugin.
 ///
@@ -54,16 +58,24 @@ class FlutterUwb {
   /// Errors raised inside an active ranging session.
   Stream<RangingErrorEvent> get rangingErrors => _errors.stream;
 
+  // -------- Helpers --------
+
+  void _check(VoidResult r) {
+    if (!(r.ok ?? false)) throw UwbException(r.error ?? 'unknown error');
+  }
+
   // -------- Discovery / OOB --------
 
   /// Start BLE OOB discovery, advertising [localName] to nearby peers.
   ///
-  /// Returns an error result if BLE is unavailable or already discovering.
-  Future<VoidResult> startDiscovery(String localName) =>
-      _api.startDiscovery(localName);
+  /// Throws [UwbException] if BLE is unavailable or already discovering.
+  Future<void> startDiscovery(String localName) async =>
+      _check(await _api.startDiscovery(localName));
 
   /// Stop BLE OOB discovery.
-  Future<VoidResult> stopDiscovery() => _api.stopDiscovery();
+  ///
+  /// Throws [UwbException] on failure.
+  Future<void> stopDiscovery() async => _check(await _api.stopDiscovery());
 
   /// Snapshot of all peers discovered since the last [startDiscovery] call.
   Future<List<UwbDevice>> getDiscovered() async {
@@ -73,45 +85,55 @@ class FlutterUwb {
 
   /// Accept a ranging request from [deviceId], supplying the local UWB token
   /// [myToken] so the peer can start an NISession / Jetpack UWB session.
-  Future<VoidResult> acceptRequest(String deviceId, Uint8List myToken) =>
-      _api.acceptRequest(deviceId, TokenPayload(bytes: myToken));
+  ///
+  /// Throws [UwbException] on failure.
+  Future<void> acceptRequest(String deviceId, Uint8List myToken) async =>
+      _check(await _api.acceptRequest(deviceId, TokenPayload(bytes: myToken)));
 
   /// Decline a ranging request from [deviceId].
-  Future<VoidResult> declineRequest(String deviceId) =>
-      _api.declineRequest(deviceId);
-
-  /// Register an accessory profile so the plugin scans for its service
-  /// UUID alongside the built-in flutter_uwb peer service.
   ///
-  /// Profiles persist across `stopDiscovery` / `startDiscovery` cycles.
+  /// Throws [UwbException] on failure.
+  Future<void> declineRequest(String deviceId) async =>
+      _check(await _api.declineRequest(deviceId));
+
+  /// Register an accessory profile so the plugin scans for its service UUID
+  /// alongside the built-in flutter_uwb peer service.
+  ///
   /// `vendorTag` (when non-null) flows through to
-  /// `UwbDevice.platform = "accessory:&lt;vendorTag&gt;"`; pass `null` for
-  /// built-in Apple-FiRa handling (`UwbDevice.platform == "accessory"`).
-  Future<VoidResult> registerAccessoryProfile({
+  /// `UwbDevice.platform = "accessory:<vendorTag>"`.
+  ///
+  /// Throws [UwbException] on failure.
+  Future<void> registerAccessoryProfile({
     required String serviceUuid,
     required String rxUuid,
     required String txUuid,
     String? vendorTag,
-  }) =>
-      _api.registerAccessoryProfile(
-        AccessoryProfile(
-          serviceUuid: serviceUuid,
-          rxUuid: rxUuid,
-          txUuid: txUuid,
-          vendorTag: vendorTag,
+  }) async =>
+      _check(
+        await _api.registerAccessoryProfile(
+          AccessoryProfile(
+            serviceUuid: serviceUuid,
+            rxUuid: rxUuid,
+            txUuid: txUuid,
+            vendorTag: vendorTag,
+          ),
         ),
       );
 
   /// Remove a previously-registered accessory profile.
-  Future<VoidResult> unregisterAccessoryProfile(String serviceUuid) =>
-      _api.unregisterAccessoryProfile(serviceUuid);
+  ///
+  /// Throws [UwbException] on failure.
+  Future<void> unregisterAccessoryProfile(String serviceUuid) async =>
+      _check(await _api.unregisterAccessoryProfile(serviceUuid));
 
   /// Exchange OOB tokens with [deviceId] in a single BLE round-trip.
   ///
-  /// Sends [myToken] to the peer and returns the peer's token. Both sides must
-  /// call this before starting a UWB session.
+  /// Sends [myToken] to the peer and returns the peer's token. Both sides
+  /// must call this before starting a UWB session. For the common case,
+  /// prefer [pairWith] which combines this with [getLocalToken].
   ///
-  /// Throws [StateError] if the platform returns an empty token.
+  /// Throws [UwbException] if the platform returns an empty token or if
+  /// the exchange fails.
   Future<Uint8List> exchangeTokens(String deviceId, Uint8List myToken) async {
     final out = await _api.exchangeTokens(
       deviceId,
@@ -119,7 +141,7 @@ class FlutterUwb {
     );
     final bytes = out.bytes;
     if (bytes == null || bytes.isEmpty) {
-      throw StateError('exchangeTokens: platform returned null or empty token');
+      throw const UwbException('exchangeTokens: platform returned empty token');
     }
     return bytes;
   }
@@ -129,29 +151,50 @@ class FlutterUwb {
   /// Returns `true` if the device has a UWB radio and the OS grants access.
   Future<bool> isUwbAvailable() => _api.isUwbAvailable();
 
-  /// Returns the local platform-specific OOB token.
+  /// Returns the local platform-specific OOB token for [role].
   ///
-  /// On Android the bytes are the 9-byte little-endian blob described in
-  /// `pigeons/uwb_api.dart`. On iOS the bytes are an
-  /// `NSKeyedArchiver`-encoded `NIDiscoveryToken`.
+  /// On Android the bytes are a 9-byte little-endian blob. On iOS they are
+  /// an `NSKeyedArchiver`-encoded `NIDiscoveryToken`. For the common case,
+  /// prefer [pairWith] which combines this with [exchangeTokens].
+  ///
+  /// Throws [UwbException] if the token is unavailable.
   Future<Uint8List> getLocalToken(UwbRole role) async {
     final t = await _api.getLocalToken(role);
     final bytes = t.bytes;
     if (bytes == null || bytes.isEmpty) {
-      throw StateError('getLocalToken: platform returned null or empty token');
+      throw const UwbException('getLocalToken: platform returned empty token');
     }
     return bytes;
   }
 
+  /// Convenience method that combines [getLocalToken] and [exchangeTokens]
+  /// in a single call.
+  ///
+  /// After this succeeds call [startRanging] to start the UWB session.
+  ///
+  /// Throws [UwbException] if token retrieval or exchange fails.
+  Future<void> pairWith(
+    String deviceId, {
+    UwbRole role = UwbRole.controller,
+  }) async {
+    final myToken = await getLocalToken(role);
+    await exchangeTokens(deviceId, myToken);
+  }
+
   /// Begin a UWB ranging session with [deviceId].
   ///
-  /// Both sides must have completed token exchange first. Samples are emitted
-  /// on [rangingSamples]; errors on [rangingErrors].
-  Future<VoidResult> startRanging(String deviceId) =>
-      _api.startRanging(deviceId);
+  /// Both sides must have completed token exchange (via [pairWith] or
+  /// [exchangeTokens]) first. Samples are emitted on [rangingSamples];
+  /// errors on [rangingErrors].
+  ///
+  /// Throws [UwbException] on failure.
+  Future<void> startRanging(String deviceId) async =>
+      _check(await _api.startRanging(deviceId));
 
   /// Stop the active UWB ranging session and release platform resources.
-  Future<VoidResult> stopRanging() => _api.stopRanging();
+  ///
+  /// Throws [UwbException] on failure.
+  Future<void> stopRanging() async => _check(await _api.stopRanging());
 }
 
 /// Carries a platform error raised inside an active ranging session.
@@ -198,15 +241,15 @@ class _FlutterApiHandler extends UwbFlutterApi {
 // -------- Backwards-compatible top-level functions --------
 final FlutterUwb _instance = FlutterUwb.instance;
 
-Future<VoidResult> startDiscovery(String localName) =>
+Future<void> startDiscovery(String localName) =>
     _instance.startDiscovery(localName);
-Future<VoidResult> stopDiscovery() => _instance.stopDiscovery();
+Future<void> stopDiscovery() => _instance.stopDiscovery();
 Future<List<UwbDevice>> getDiscovered() => _instance.getDiscovered();
-Future<VoidResult> acceptRequest(String deviceId, Uint8List myToken) =>
+Future<void> acceptRequest(String deviceId, Uint8List myToken) =>
     _instance.acceptRequest(deviceId, myToken);
-Future<VoidResult> declineRequest(String deviceId) =>
+Future<void> declineRequest(String deviceId) =>
     _instance.declineRequest(deviceId);
-Future<VoidResult> registerAccessoryProfile({
+Future<void> registerAccessoryProfile({
   required String serviceUuid,
   required String rxUuid,
   required String txUuid,
@@ -218,12 +261,13 @@ Future<VoidResult> registerAccessoryProfile({
       txUuid: txUuid,
       vendorTag: vendorTag,
     );
-Future<VoidResult> unregisterAccessoryProfile(String serviceUuid) =>
+Future<void> unregisterAccessoryProfile(String serviceUuid) =>
     _instance.unregisterAccessoryProfile(serviceUuid);
 Future<Uint8List> exchangeTokens(String deviceId, Uint8List myToken) =>
     _instance.exchangeTokens(deviceId, myToken);
 Future<bool> isUwbAvailable() => _instance.isUwbAvailable();
 Future<Uint8List> getLocalToken(UwbRole role) => _instance.getLocalToken(role);
-Future<VoidResult> startRanging(String deviceId) =>
-    _instance.startRanging(deviceId);
-Future<VoidResult> stopRanging() => _instance.stopRanging();
+Future<void> pairWith(String deviceId, {UwbRole role = UwbRole.controller}) =>
+    _instance.pairWith(deviceId, role: role);
+Future<void> startRanging(String deviceId) => _instance.startRanging(deviceId);
+Future<void> stopRanging() => _instance.stopRanging();

@@ -1,143 +1,146 @@
 # flutter_uwb
 
-A Flutter plugin for **Ultra-Wideband (UWB) precise ranging** with built-in
-out-of-band (OOB) device discovery and token exchange.
+Flutter plugin for **UWB precise ranging** with BLE out-of-band device
+discovery on Android and iOS.
 
-| Platform | Discovery / OOB        | Ranging                 | Min OS                |
-| -------- | ---------------------- | ----------------------- | --------------------- |
-| Android  | BLE GATT (custom svc)  | `androidx.core.uwb`     | API 23 (peer mode)    |
-| iOS      | BLE GATT (custom svc)  | `NearbyInteraction`     | iOS 14 (peer mode), iOS 15 (accessory) |
+![Android](https://img.shields.io/badge/Android-API%2023%2B-brightgreen?logo=android)
+![iOS](https://img.shields.io/badge/iOS-14%2B-blue?logo=apple)
 
-## Status
+---
 
-`v0.2.0+1` — peer-mode UWB on Android↔Android and iOS↔iOS, plus
-**accessory-mode** ranging on iOS via `NINearbyAccessoryConfiguration` and
-on Android via `controleeSessionScope`. Cross-platform iOS↔Android, and
-both-platforms-↔-accessory, ride on the same Apple FiRa accessory BLE
-protocol.
-
-The peer matrix:
-
-| Peer A | Peer B | Status |
-| --- | --- | --- |
-| iPhone | iPhone | ✅ shipped |
-| Android | Android | ✅ shipped |
-| iPhone | Apple-spec accessory | ✅ shipped (code-complete; runtime verification gated on real accessory hardware) |
-| iPhone | Android | ✅ shipped (code-complete; runtime verification gated on Pixel 7 Pro+ class device) |
-| Android | Apple-spec accessory | ✅ shipped (Android-as-host; same gating) |
-
-> **Verification gap.** iPhone↔iPhone BLE pairing has not yet been
-> exercised on a two-iPhone hardware setup as of this release —
-> functional sim verification only. iOS↔Android and any-↔-accessory
-> require additional hardware (a Pixel 7 Pro+ class Android UWB device,
-> and a FiRa-compliant Apple-protocol accessory) to validate the FiRa
-> byte layouts. See `doc/migration-v1-to-v2.md` for the test plan.
-
-## Install
+## Installation
 
 ```yaml
 dependencies:
-  flutter_uwb: ^0.2.0
+  flutter_uwb: ^0.3.0
 ```
 
-## Quick start (peer mode)
+---
+
+## Quick start
 
 ```dart
 import 'package:flutter_uwb/flutter_uwb.dart';
 
 final uwb = FlutterUwb.instance;
 
-// 1. Check hardware support.
+// Check hardware support first.
 if (!await uwb.isUwbAvailable()) return;
 
-// 2. Discover peers via OOB. New peers stream in.
-await uwb.startDiscovery('my-device-name');
-uwb.deviceFound.listen((device) {
-  print('found ${device.name} (${device.id}) on ${device.platform}');
+// Start BLE discovery. New peers arrive on deviceFound.
+await uwb.startDiscovery('my-device');
+uwb.deviceFound.listen((device) async {
+  // Pair (exchange UWB tokens) then start ranging.
+  try {
+    await uwb.pairWith(device.id!);
+    await uwb.startRanging(device.id!);
+  } on UwbException catch (e) {
+    print('error: ${e.message}');
+  }
 });
 
-// 3. Exchange platform-native tokens with the chosen peer.
-final myToken = await uwb.getLocalToken(UwbRole.controller);
-final peerToken = await uwb.exchangeTokens(deviceId, myToken);
-
-// 4. Start a ranging session and consume samples.
-await uwb.startRanging(deviceId);
-uwb.rangingSamples.listen((s) {
-  print('${s.distanceMeters?.toStringAsFixed(2)} m');
+// Consume ranging samples as they arrive.
+uwb.rangingSamples.listen((sample) {
+  print('${sample.distanceMeters?.toStringAsFixed(2)} m  '
+      '${sample.azimuthDegrees?.toStringAsFixed(1)}°');
 });
 
-// 5. Tear down.
+// Tear down when done.
 await uwb.stopRanging();
 await uwb.stopDiscovery();
 ```
 
+> **Both devices** must call `pairWith` before either calls `startRanging`.
+> Coordinate the exchange over your own signalling channel (UI button tap,
+> QR code, server event, etc.).
+
+---
+
 ## Accessory mode
 
-Apple-spec accessories (Qorvo NI, NXP Trimension UCI, etc.) and Android
-devices speaking the Apple FiRa protocol are surfaced as
-`UwbDevice.platform == "accessory"` (or `"accessory:<vendor>"` if a
-`vendorTag` was registered).
+Accessories that speak the Apple FiRa protocol — and Android devices
+acting as an accessory — are surfaced as `UwbDevice.platform == "accessory"`
+(or `"accessory:<vendorTag>"` when a `vendorTag` is set).
 
 ```dart
-// Register the accessory's BLE profile so the plugin scans for it.
+// Register the accessory's vendor-specific BLE service UUIDs.
 await uwb.registerAccessoryProfile(
   serviceUuid: '48FE7E40-CB7C-470E-89ED-5B85A13E67EE',
   rxUuid:      '6E63FF01-87A8-490B-AF2F-FC1D4B67F77A',
   txUuid:      '6E63FF02-87A8-490B-AF2F-FC1D4B67F77A',
-  vendorTag:   'qorvo', // optional — used to namespace platform string
+  vendorTag:   'qorvo', // optional, namespaces the platform string
 );
 
 await uwb.startDiscovery('my-device');
 uwb.deviceFound
     .where((d) => (d.platform ?? '').startsWith('accessory'))
-    .listen((d) {
-  // No need to call exchangeTokens — the plugin drives the
-  // Apple-protocol handshake internally.
-  uwb.startRanging(d.id!);
+    .listen((d) async {
+  // No token exchange needed — the Apple protocol handshake runs
+  // internally. Just start ranging.
+  try {
+    await uwb.startRanging(d.id!);
+  } on UwbException catch (e) {
+    print('accessory ranging error: ${e.message}');
+  }
 });
 ```
 
-The protocol's byte format is implemented in
-`lib/src/accessory/apple_protocol.dart` (Dart) and mirrored in
-`android/.../accessory/AppleProtocol.kt` (Kotlin). The exact UUIDs above
-are sample values from Apple's WWDC 2022 reference; real accessories
-ship vendor-specific service / characteristic UUIDs.
+---
 
-## Public API
+## Streams
+
+| Stream | Fires when |
+|--------|-----------|
+| `deviceFound` | A new peer is discovered via BLE |
+| `deviceLost` | A previously discovered peer disappears |
+| `rangingSamples` | A new `RangingSample` arrives from the active session |
+| `peerLost` | The ranging peer disconnects mid-session |
+| `rangingErrors` | A platform error occurs inside the active session |
+
+---
+
+## API reference
 
 ```dart
 class FlutterUwb {
   static final FlutterUwb instance;
 
-  // Discovery / OOB
-  Future<VoidResult> startDiscovery(String localName);
-  Future<VoidResult> stopDiscovery();
-  Future<List<UwbDevice>> getDiscovered();           // one-shot snapshot
-  Stream<UwbDevice> get deviceFound;                 // preferred
-  Stream<String>    get deviceLost;
-  Future<VoidResult> acceptRequest(String id, Uint8List myToken);
-  Future<VoidResult> declineRequest(String id);
-  Future<Uint8List>  exchangeTokens(String id, Uint8List myToken);
+  // Discovery
+  Future<void>         startDiscovery(String localName);
+  Future<void>         stopDiscovery();
+  Future<List<UwbDevice>> getDiscovered();
+  Stream<UwbDevice>    get deviceFound;
+  Stream<String>       get deviceLost;
 
-  // Accessory profile registration (v0.2.0+)
-  Future<VoidResult> registerAccessoryProfile({
-    required String serviceUuid,
-    required String rxUuid,
-    required String txUuid,
-    String? vendorTag,
-  });
-  Future<VoidResult> unregisterAccessoryProfile(String serviceUuid);
+  // Pairing (peer mode)
+  Future<void>         pairWith(String deviceId, {UwbRole role});
+  Future<Uint8List>    getLocalToken(UwbRole role);     // advanced use
+  Future<Uint8List>    exchangeTokens(String deviceId, Uint8List myToken);
+  Future<void>         acceptRequest(String deviceId, Uint8List myToken);
+  Future<void>         declineRequest(String deviceId);
 
-  // UWB
-  Future<bool>      isUwbAvailable();
-  Future<Uint8List> getLocalToken(UwbRole role);
-  Future<VoidResult> startRanging(String id);
-  Future<VoidResult> stopRanging();
+  // Accessory profiles
+  Future<void>         registerAccessoryProfile({
+                         required String serviceUuid,
+                         required String rxUuid,
+                         required String txUuid,
+                         String? vendorTag,
+                       });
+  Future<void>         unregisterAccessoryProfile(String serviceUuid);
+
+  // Ranging
+  Future<bool>         isUwbAvailable();
+  Future<void>         startRanging(String deviceId);
+  Future<void>         stopRanging();
   Stream<RangingSample>     get rangingSamples;
   Stream<String>            get peerLost;
   Stream<RangingErrorEvent> get rangingErrors;
 }
+```
 
+All mutating methods throw `UwbException` on failure.
+
+```dart
 enum UwbRole { controller, controlee }
 
 class RangingSample {
@@ -147,82 +150,78 @@ class RangingSample {
   double? elevationDegrees;
   int?    elapsedRealtimeNanos;
 }
+
+class UwbException implements Exception {
+  final String message;
+}
 ```
 
-`UwbDevice.platform` taxonomy:
+`UwbDevice.platform` values:
 
-- `"ios"` / `"android"` — peer-mode device speaking the v1 9-byte token.
-- `"accessory"` — Apple-FiRa-spec accessory (built-in handler).
-- `"accessory:<tag>"` — Apple-FiRa-spec accessory with a registered
-  vendor tag, useful for filtering when multiple vendor profiles are
-  registered.
+| Value | Meaning |
+|-------|---------|
+| `"ios"` | iOS peer (peer mode) |
+| `"android"` | Android peer (peer mode) |
+| `"accessory"` | Apple FiRa accessory (built-in handler) |
+| `"accessory:<tag>"` | Apple FiRa accessory with registered vendor tag |
 
-## Token format (peer mode)
-
-`getLocalToken(role)` returns **opaque platform-specific bytes**. Do not
-attempt to interpret them on the wire across platforms.
-
-- **Android** — 9 bytes, little-endian:
-  `[0]` role · `[1..2]` shortAddr · `[3]` channel · `[4]` preambleIndex ·
-  `[5..8]` sessionId
-- **iOS** — `NSKeyedArchiver`-encoded `NIDiscoveryToken`
-
-Accessory mode does not use `getLocalToken` / `exchangeTokens`; the
-multi-message Apple protocol is driven internally by the plugin.
+---
 
 ## Permissions
 
-### Android (declared by the plugin manifest)
+### Android
+
+The plugin manifest already declares all required permissions. Your app
+must request the runtime permissions:
+
+- **API ≥ 31** — `BLUETOOTH_SCAN`, `BLUETOOTH_ADVERTISE`, `BLUETOOTH_CONNECT`
+- **API ≤ 30** — `ACCESS_FINE_LOCATION`
+- **API ≥ 33** — additionally `UWB_RANGING`
 
 ```xml
-<uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
-<uses-feature android:name="android.hardware.uwb"           android:required="false"/>
-<uses-permission android:name="android.permission.BLUETOOTH"            android:maxSdkVersion="30"/>
-<uses-permission android:name="android.permission.BLUETOOTH_ADMIN"      android:maxSdkVersion="30"/>
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30"/>
-<uses-permission android:name="android.permission.BLUETOOTH_SCAN"       android:usesPermissionFlags="neverForLocation"/>
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation"/>
 <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"/>
 <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 <uses-permission android:name="android.permission.UWB_RANGING"/>
 ```
 
-The host app must request the runtime permissions. On API ≥ 31 that is
-`BLUETOOTH_SCAN`/`BLUETOOTH_ADVERTISE`/`BLUETOOTH_CONNECT`; on API ≤ 30
-it is `ACCESS_FINE_LOCATION`. `UWB_RANGING` is required on API ≥ 33.
+### iOS
 
-### iOS — add to `Info.plist`
+Add to your `Info.plist`:
 
 ```xml
 <key>NSNearbyInteractionUsageDescription</key>
-<string>Used to measure precise distance to nearby phones over UWB.</string>
+<string>Used to measure precise distance to nearby devices over UWB.</string>
 <key>NSBluetoothAlwaysUsageDescription</key>
-<string>Used to discover nearby phones for UWB ranging.</string>
+<string>Used to discover nearby devices for UWB ranging.</string>
 ```
+
+---
 
 ## Hardware requirements
 
-- **Android** — UWB-capable device. Peer mode: Pixel 6 Pro+, Samsung
-  Galaxy S21 Ultra+. Accessory-controlee mode (cross-platform with
-  iPhone or Apple-spec accessory): Pixel 7 Pro+ on Android 14+
-  recommended. `isUwbAvailable()` returns `false` on emulators and on
-  devices lacking `FEATURE_UWB`.
-- **iOS** — iPhone with U1 or U2 chip (iPhone 11+, except SE 2/3) on
-  iOS 14+ for peer mode. Accessory mode requires **iOS 15+** for
-  `NINearbyAccessoryConfiguration`. `isUwbAvailable()` returns `false`
-  on the simulator.
+**Android** — UWB-capable device (Pixel 6 Pro+, Samsung Galaxy S21 Ultra+
+or newer). Accessory/controlee mode requires Pixel 7 Pro+ on Android 14+.
+`isUwbAvailable()` returns `false` on emulators and devices without the
+`FEATURE_UWB` system feature.
 
-## Example
+**iOS** — iPhone with U1 or U2 chip (iPhone 11+, excluding SE 2nd/3rd gen)
+on iOS 14+ for peer mode. Accessory mode requires **iOS 15+**.
+`isUwbAvailable()` returns `false` on the simulator.
 
-A complete sample is included under `example/`. It scans, lists discovered
-peers, exchanges tokens (peer mode), starts a ranging session, and
-renders the latest distance/azimuth/elevation as samples arrive.
+---
 
 ## Migration
 
-If you're upgrading from `v0.1.0`, see
-[`doc/migration-v1-to-v2.md`](doc/migration-v1-to-v2.md). The public
-peer-mode API is unchanged; v2 is additive.
+- **v0.2 → v0.3** — see [`doc/migration-v2-to-v3.md`](doc/migration-v2-to-v3.md)
+- **v0.1 → v0.2** — see [`doc/migration-v1-to-v2.md`](doc/migration-v1-to-v2.md)
+
+For protocol internals, token formats, and BLE topology see
+[`doc/architecture.md`](doc/architecture.md).
+
+---
 
 ## License
 
-See `LICENSE`.
+[MIT](LICENSE)
