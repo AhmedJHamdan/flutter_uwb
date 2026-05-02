@@ -10,7 +10,7 @@ out-of-band (OOB) device discovery and token exchange.
 
 ## Status
 
-`v0.2.0` — peer-mode UWB on Android↔Android and iOS↔iOS, plus
+`v0.2.0+1` — peer-mode UWB on Android↔Android and iOS↔iOS, plus
 **accessory-mode** ranging on iOS via `NINearbyAccessoryConfiguration` and
 on Android via `controleeSessionScope`. Cross-platform iOS↔Android, and
 both-platforms-↔-accessory, ride on the same Apple FiRa accessory BLE
@@ -31,7 +31,7 @@ The peer matrix:
 > functional sim verification only. iOS↔Android and any-↔-accessory
 > require additional hardware (a Pixel 7 Pro+ class Android UWB device,
 > and a FiRa-compliant Apple-protocol accessory) to validate the FiRa
-> byte layouts. See `docs/migration-v1-to-v2.md` for the test plan.
+> byte layouts. See `doc/migration-v1-to-v2.md` for the test plan.
 
 ## Install
 
@@ -220,7 +220,7 @@ renders the latest distance/azimuth/elevation as samples arrive.
 ## Migration
 
 If you're upgrading from `v0.1.0`, see
-[`docs/migration-v1-to-v2.md`](docs/migration-v1-to-v2.md). The public
+[`doc/migration-v1-to-v2.md`](doc/migration-v1-to-v2.md). The public
 peer-mode API is unchanged; v2 is additive.
 
 ## License
