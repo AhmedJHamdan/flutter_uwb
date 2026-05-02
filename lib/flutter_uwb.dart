@@ -40,6 +40,8 @@ class FlutterUwb {
       StreamController<String>.broadcast();
   final StreamController<RangingErrorEvent> _errors =
       StreamController<RangingErrorEvent>.broadcast();
+  final StreamController<IncomingRequest> _incomingRequests =
+      StreamController<IncomingRequest>.broadcast();
 
   /// Devices observed via OOB discovery, fired once per peer the first time
   /// it is seen.
@@ -57,6 +59,13 @@ class FlutterUwb {
 
   /// Errors raised inside an active ranging session.
   Stream<RangingErrorEvent> get rangingErrors => _errors.stream;
+
+  /// Pair requests received from a peer over the OOB transport.
+  ///
+  /// Fires when a remote peer initiates pairing by sending us their
+  /// UWB token. Reply with [acceptRequest] (and then [startRanging])
+  /// or [declineRequest].
+  Stream<IncomingRequest> get incomingRequests => _incomingRequests.stream;
 
   // -------- Helpers --------
 
@@ -236,6 +245,23 @@ class _FlutterApiHandler extends UwbFlutterApi {
   void onRangingError(String deviceId, String message) {
     parent._errors.add(RangingErrorEvent(deviceId, message));
   }
+
+  @override
+  void onIncomingRequest(UwbDevice device, TokenPayload peerToken) {
+    final bytes = peerToken.bytes ?? Uint8List(0);
+    parent._incomingRequests.add(IncomingRequest(device, bytes));
+  }
+}
+
+/// Pair request received from a peer over the OOB transport.
+class IncomingRequest {
+  IncomingRequest(this.device, this.peerToken);
+
+  /// The peer that sent the request.
+  final UwbDevice device;
+
+  /// The peer's UWB token, ready to feed into a local ranging session.
+  final Uint8List peerToken;
 }
 
 // -------- Backwards-compatible top-level functions --------

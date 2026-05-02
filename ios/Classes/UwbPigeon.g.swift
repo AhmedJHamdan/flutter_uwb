@@ -470,6 +470,8 @@ private class UwbFlutterApiCodecReader: FlutterStandardReader {
       case 128:
         return RangingSample.fromList(self.readValue() as! [Any?])
       case 129:
+        return TokenPayload.fromList(self.readValue() as! [Any?])
+      case 130:
         return UwbDevice.fromList(self.readValue() as! [Any?])
       default:
         return super.readValue(ofType: type)
@@ -482,8 +484,11 @@ private class UwbFlutterApiCodecWriter: FlutterStandardWriter {
     if let value = value as? RangingSample {
       super.writeByte(128)
       super.writeValue(value.toList())
-    } else if let value = value as? UwbDevice {
+    } else if let value = value as? TokenPayload {
       super.writeByte(129)
+      super.writeValue(value.toList())
+    } else if let value = value as? UwbDevice {
+      super.writeByte(130)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -514,6 +519,7 @@ protocol UwbFlutterApiProtocol {
   func onRangingSample(sample sampleArg: RangingSample, completion: @escaping (Result<Void, FlutterError>) -> Void)
   func onPeerLost(deviceId deviceIdArg: String, completion: @escaping (Result<Void, FlutterError>) -> Void)
   func onRangingError(deviceId deviceIdArg: String, message messageArg: String, completion: @escaping (Result<Void, FlutterError>) -> Void)
+  func onIncomingRequest(device deviceArg: UwbDevice, peerToken peerTokenArg: TokenPayload, completion: @escaping (Result<Void, FlutterError>) -> Void)
 }
 class UwbFlutterApi: UwbFlutterApiProtocol {
   private let binaryMessenger: FlutterBinaryMessenger
@@ -599,6 +605,24 @@ class UwbFlutterApi: UwbFlutterApiProtocol {
     let channelName: String = "dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onRangingError"
     let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
     channel.sendMessage([deviceIdArg, messageArg] as [Any?]) { response in
+      guard let listResponse = response as? [Any?] else {
+        completion(.failure(createConnectionError(withChannelName:channelName)))
+        return
+      }
+      if (listResponse.count > 1) {
+        let code: String = listResponse[0] as! String
+        let message: String? = nilOrValue(listResponse[1])
+        let details: String? = nilOrValue(listResponse[2])
+        completion(.failure(FlutterError(code: code, message: message, details: details)));
+      } else {
+        completion(.success(Void()))
+      }
+    }
+  }
+  func onIncomingRequest(device deviceArg: UwbDevice, peerToken peerTokenArg: TokenPayload, completion: @escaping (Result<Void, FlutterError>) -> Void) {
+    let channelName: String = "dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onIncomingRequest"
+    let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
+    channel.sendMessage([deviceArg, peerTokenArg] as [Any?]) { response in
       guard let listResponse = response as? [Any?] else {
         completion(.failure(createConnectionError(withChannelName:channelName)))
         return

@@ -513,6 +513,11 @@ private object UwbFlutterApiCodec : StandardMessageCodec() {
       }
       129.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
+          TokenPayload.fromList(it)
+        }
+      }
+      130.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
           UwbDevice.fromList(it)
         }
       }
@@ -525,8 +530,12 @@ private object UwbFlutterApiCodec : StandardMessageCodec() {
         stream.write(128)
         writeValue(stream, value.toList())
       }
-      is UwbDevice -> {
+      is TokenPayload -> {
         stream.write(129)
+        writeValue(stream, value.toList())
+      }
+      is UwbDevice -> {
+        stream.write(130)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -611,6 +620,21 @@ class UwbFlutterApi(private val binaryMessenger: BinaryMessenger) {
     val channelName = "dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onRangingError"
     val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
     channel.send(listOf(deviceIdArg, messageArg)) {
+      if (it is List<*>) {
+        if (it.size > 1) {
+          callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))
+        } else {
+          callback(Result.success(Unit))
+        }
+      } else {
+        callback(Result.failure(createConnectionError(channelName)))
+      } 
+    }
+  }
+  fun onIncomingRequest(deviceArg: UwbDevice, peerTokenArg: TokenPayload, callback: (Result<Unit>) -> Unit) {
+    val channelName = "dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onIncomingRequest"
+    val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
+    channel.send(listOf(deviceArg, peerTokenArg)) {
       if (it is List<*>) {
         if (it.size > 1) {
           callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))

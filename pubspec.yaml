@@ -1,6 +1,6 @@
 name: flutter_uwb
 description: Flutter plugin for UWB precise ranging with BLE out-of-band device discovery on Android and iOS.
-version: 0.3.0
+version: 0.3.1
 homepage: https://github.com/AhmedJHamdan/flutter_uwb
 repository: https://github.com/AhmedJHamdan/flutter_uwb
 publish_to: https://pub.dev

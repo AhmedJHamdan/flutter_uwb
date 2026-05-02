@@ -1,123 +1,84 @@
 import CoreBluetooth
 import Foundation
 
-/// CoreBluetooth-based OOB transport.
+/// CoreBluetooth-based out-of-band transport for FiRa accessory mode.
 ///
-/// Two roles in one class:
+/// Scans for peripherals advertising one of the registered accessory
+/// service UUIDs, surfaces them via `onAccessoryFound`, and then drives
+/// a long-lived GATT connection on demand:
 ///
-/// - **Peer mode** — mirrors `BleOob.kt` on Android: the custom flutter_uwb
-///   service UUID, advertise + scan simultaneously, one-shot `exchange(...)`
-///   for token swap.
+/// 1. `accessoryConnect` — connect to a discovered accessory and
+///    subscribe to its Tx (notify) characteristic. `onReady(true)`
+///    fires once subscription is confirmed.
+/// 2. `accessoryWrite` — write bytes to the accessory's Rx
+///    characteristic.
+/// 3. `accessoryDisconnect` — tear the connection down.
 ///
-/// - **Accessory mode** — scans for additional Apple-FiRa accessory service
-///   UUIDs in parallel. When a peripheral matches a registered profile,
-///   `onAccessoryFound` fires; the host then drives a long-lived connection
-///   via `accessoryConnect / accessoryWrite / accessoryDisconnect`, with bytes
-///   streaming in through `onAccessoryNotify`.
+/// Notifications pushed by the accessory arrive via
+/// `onAccessoryNotify`. Disconnections (peer-initiated or local) are
+/// reported via `onDisconnected`.
 ///
-/// Foreground only. iOS BLE peripheral mode does not include the service UUID
-/// in the main advertising packet while backgrounded.
+/// iOS↔iOS peer-mode discovery and token exchange is handled by
+/// `PeerOob` (MultipeerConnectivity) and is intentionally not part of
+/// this class. Foreground only.
 @available(iOS 14.0, *)
 final class BleOob: NSObject {
   // MARK: - Public surface
 
   /// Vendor-specific BLE profile for an Apple-FiRa accessory.
   ///
-  /// The protocol's byte format is fixed (see `apple_protocol.dart`), but
-  /// the BLE service / characteristic UUIDs are vendor-chosen. Pass the
-  /// relevant UUIDs to `registerAccessoryProfile` from Dart.
+  /// The protocol's byte format is fixed (see `apple_protocol.dart`),
+  /// but the BLE service and characteristic UUIDs are vendor-chosen.
+  /// Pass them in via `registerAccessoryProfile` from Dart.
   struct AccessoryProfile: Equatable {
     let serviceUuid: CBUUID
-    /// Characteristic the iPhone writes to (accessory's "Rx").
+    /// Characteristic the iPhone writes to (the accessory's "Rx").
     let rxUuid: CBUUID
     /// Characteristic the accessory pushes notifications on (its "Tx").
     let txUuid: CBUUID
   }
 
   protocol Callback: AnyObject {
-    // Peer mode --------------------------------------------------------
-    func onDeviceFound(id: String, name: String)
-    func onIncomingRequest(id: String, name: String, peerToken: Data)
-    func onConnected(id: String, name: String)
-    func onDisconnected(id: String, name: String)
-    func onError(_ message: String)
-
-    // Accessory mode ---------------------------------------------------
-    /// A peripheral advertising one of the registered accessory service
-    /// UUIDs has been seen. `serviceUuid` is the matched profile's service
-    /// UUID (uppercase, hyphenated) — used by the host to look up
-    /// vendor-tag metadata.
+    /// A peripheral advertising one of the registered accessory
+    /// service UUIDs has been seen. `serviceUuid` is the matched
+    /// profile's service UUID (uppercase, hyphenated) — used by the
+    /// host to look up vendor-tag metadata.
     func onAccessoryFound(id: String, name: String, serviceUuid: String)
-    /// Bytes pushed by the accessory via its Tx (notify) characteristic.
-    /// `bytes` is a fully-reassembled message (BLE-level fragmentation is
-    /// transparent to the caller).
+
+    /// Bytes pushed by the accessory via its Tx (notify)
+    /// characteristic. `bytes` is a fully-reassembled message
+    /// (BLE-level fragmentation is transparent to the caller).
     func onAccessoryNotify(id: String, bytes: Data)
+
+    /// A previously-connected accessory disconnected (peer-initiated,
+    /// link loss, or our own `accessoryDisconnect` call).
+    func onDisconnected(id: String, name: String)
+
+    /// Any non-recoverable BLE error. Surfaced as a transport error to
+    /// the active ranging session if one is running.
+    func onError(_ message: String)
   }
 
   weak var callback: Callback?
 
-  // Peer-mode UUIDs — same as `android/.../oob/BleOob.kt`.
-  static let serviceUuid =
-    CBUUID(string: "4F1A9A1C-08D8-4B2E-BC6B-6B1D9F8D7B21")
-  static let writeUuid =
-    CBUUID(string: "B2D2A7F9-8C2A-4D7E-A89D-1D3A4E5F6A70")
-  static let notifyUuid =
-    CBUUID(string: "C9A0A82B-0C5A-4B8E-9E2E-5DBE2D08F7C3")
-
   // MARK: - Internal state
 
   private var central: CBCentralManager?
-  private var peripheral: CBPeripheralManager?
 
-  private(set) var localName: String = "ios"
   private(set) var started = false
   private var wantsScan = false
-  private var wantsAdvertise = false
 
-  /// Configured accessory profiles. The scan filter is the union of these
-  /// service UUIDs and the peer-mode `serviceUuid`.
+  /// Configured accessory profiles. Forms the scan filter.
   private var accessoryProfiles: [AccessoryProfile] = []
-
-  // Peripheral / GATT-server state ----------------------------------------
-
-  private var notifyCharacteristic: CBMutableCharacteristic?
-  private var writeCharacteristic: CBMutableCharacteristic?
-
-  /// Centrals that have written to us, keyed by their identifier.
-  private var pendingCentrals: [String: CBCentral] = [:]
-  /// Bytes the central wrote, kept until `accept(deviceId:myToken:)` is
-  /// called. Consumed once the reply is sent.
-  private var pendingCentralBytes: [String: Data] = [:]
-  /// Notify backlog, kept when `updateValue` returns false (queue is full).
-  private var queuedNotifies: [(CBCentral, Data)] = []
-
-  // Central / GATT-client state -------------------------------------------
 
   private var peripheralsByID: [String: CBPeripheral] = [:]
   private var seenAdvertisers: Set<String> = []
-  /// Cached `name` for already-discovered peripherals so `onConnected` can
-  /// echo it without consulting `CBPeripheral.name` (which is sometimes
-  /// nil after subscribe).
+  /// Cached `name` for already-discovered peripherals so disconnect
+  /// callbacks can echo it without consulting `CBPeripheral.name`
+  /// (which is sometimes nil after subscribe).
   private var nameByID: [String: String] = [:]
-
-  /// Mode of each discovered peripheral, decided at advertisement time.
-  private enum PeerKind {
-    case peer
-    case accessory(AccessoryProfile)
-  }
-  private var kindByID: [String: PeerKind] = [:]
-
-  /// Per-peer state for an in-flight `exchange(...)` request.
-  private struct ExchangeState {
-    let myToken: Data
-    let onPeer: (Data) -> Void
-    let onErr: (String) -> Void
-    var settled = false
-    var notifyChar: CBCharacteristic?
-    var writeChar: CBCharacteristic?
-  }
-
-  private var exchanges: [String: ExchangeState] = [:]
+  /// The accessory profile each discovered peripheral matched.
+  private var profileByID: [String: AccessoryProfile] = [:]
 
   /// Per-accessory connection state.
   private struct AccessoryConnection {
@@ -136,60 +97,51 @@ final class BleOob: NSObject {
     super.init()
   }
 
-  /// Start peer-mode (advertise + scan custom service) and optionally also
-  /// scan for one or more accessory service UUIDs.
+  /// Start scanning for accessories advertising one of the registered
+  /// `accessoryProfiles`. With an empty list this is a no-op (no scan
+  /// is started until `updateAccessoryProfiles` is called with at
+  /// least one profile, or `start` is called again).
   ///
   /// Calling `start` twice without an intervening `stop` updates the
-  /// accessory-profile list and (re)kicks off scanning if the radio is up.
-  func start(
-    localName: String,
-    accessoryProfiles: [AccessoryProfile] = []
-  ) {
-    self.localName = localName
+  /// accessory-profile list and (re)kicks off scanning if the radio is
+  /// up.
+  func start(accessoryProfiles: [AccessoryProfile]) {
     self.accessoryProfiles = accessoryProfiles
     seenAdvertisers.removeAll()
-    pendingCentrals.removeAll()
-    pendingCentralBytes.removeAll()
-    queuedNotifies.removeAll()
-    kindByID.removeAll()
+    profileByID.removeAll()
     started = true
-    wantsScan = true
-    wantsAdvertise = true
+    wantsScan = !accessoryProfiles.isEmpty
 
-    // Bring up both managers. State callbacks below kick off scan/advertise
-    // once the radio reaches `.poweredOn`. Reusing existing managers if any
-    // is fine; CoreBluetooth keeps state across foreground transitions.
+    // The state callback below kicks off the scan once the radio
+    // reaches `.poweredOn`. Reusing an existing manager is fine;
+    // CoreBluetooth keeps state across foreground transitions.
     if central == nil {
       central = CBCentralManager(delegate: self, queue: .main)
-    } else {
-      // If already on, restart scan to pick up the new UUID list.
-      if let c = central, c.state == .poweredOn, c.isScanning {
-        c.stopScan()
-      }
+    } else if let c = central, c.state == .poweredOn, c.isScanning {
+      // Restart scan to pick up the new UUID list.
+      c.stopScan()
       attemptScanIfReady()
-    }
-    if peripheral == nil {
-      peripheral = CBPeripheralManager(delegate: self, queue: .main)
     } else {
-      attemptAdvertiseIfReady()
+      attemptScanIfReady()
     }
   }
 
-  /// Update the configured accessory profile list. If a scan is currently
-  /// active, restart it with the new UUID filter; otherwise the new list is
-  /// picked up on the next `start(...)` call.
+  /// Update the configured accessory profile list. If a scan is
+  /// currently active, restart it with the new UUID filter; otherwise
+  /// the new list is picked up on the next `start(...)` call.
   func updateAccessoryProfiles(_ profiles: [AccessoryProfile]) {
     self.accessoryProfiles = profiles
-    if let c = central, c.state == .poweredOn, c.isScanning {
+    wantsScan = !profiles.isEmpty
+    guard let c = central else { return }
+    if c.state == .poweredOn, c.isScanning {
       c.stopScan()
-      attemptScanIfReady()
     }
+    attemptScanIfReady()
   }
 
   func stop() {
     started = false
     wantsScan = false
-    wantsAdvertise = false
 
     if let c = central {
       if c.isScanning { c.stopScan() }
@@ -198,27 +150,11 @@ final class BleOob: NSObject {
         c.cancelPeripheralConnection(p)
       }
     }
-    if let p = peripheral {
-      if p.isAdvertising { p.stopAdvertising() }
-      p.removeAllServices()
-    }
 
-    notifyCharacteristic = nil
-    writeCharacteristic = nil
     seenAdvertisers.removeAll()
-    pendingCentrals.removeAll()
-    pendingCentralBytes.removeAll()
-    queuedNotifies.removeAll()
     peripheralsByID.removeAll()
     nameByID.removeAll()
-    kindByID.removeAll()
-
-    // Fail any in-flight exchanges.
-    for var state in exchanges.values where !state.settled {
-      state.settled = true
-      state.onErr("BLE stopped")
-    }
-    exchanges.removeAll()
+    profileByID.removeAll()
 
     // Fail any pending accessory ready-callbacks.
     for var conn in accessoryConnections.values {
@@ -228,68 +164,13 @@ final class BleOob: NSObject {
     accessoryConnections.removeAll()
   }
 
-  // MARK: - Pairing API (peripheral-side)
-
-  /// Reply to a pending incoming-request with `myToken` over NOTIFY. Mirror
-  /// of `BleOob.accept` on Android.
-  func accept(deviceId: String, myToken: Data) {
-    guard let c = pendingCentrals[deviceId] else {
-      callback?.onError("accept: unknown deviceId \(deviceId)")
-      return
-    }
-    sendNotify(to: c, value: myToken)
-    callback?.onConnected(id: deviceId, name: c.identifier.uuidString)
-  }
-
-  /// Refuse a pending incoming-request. Mirror of `BleOob.decline`.
-  ///
-  /// CoreBluetooth has no first-class "kick this central" call; the closest
-  /// analogue is letting the connection time out. We forget our pending
-  /// state so subsequent writes are treated as fresh requests.
-  func decline(deviceId: String) {
-    pendingCentrals.removeValue(forKey: deviceId)
-    pendingCentralBytes.removeValue(forKey: deviceId)
-  }
-
-  // MARK: - Pairing API (central-side, peer mode)
-
-  /// Connect to a discovered peer-mode peripheral, write `myToken` to it,
-  /// and wait for the peer's NOTIFY reply. Mirror of `BleOob.exchange`.
-  ///
-  /// Both completion blocks fire at most once. `onPeer` runs after the
-  /// peer's NOTIFY arrives; `onErr` runs on any failure path.
-  func exchange(
-    deviceId: String,
-    myToken: Data,
-    onPeer: @escaping (Data) -> Void,
-    onErr: @escaping (String) -> Void
-  ) {
-    guard let p = peripheralsByID[deviceId] else {
-      onErr("exchange: unknown deviceId \(deviceId)")
-      return
-    }
-    exchanges[deviceId] = ExchangeState(
-      myToken: myToken,
-      onPeer: onPeer,
-      onErr: onErr,
-      settled: false,
-      notifyChar: nil,
-      writeChar: nil
-    )
-    p.delegate = self
-    if p.state == .connected {
-      p.discoverServices([Self.serviceUuid])
-    } else {
-      central?.connect(p, options: nil)
-    }
-  }
-
   // MARK: - Accessory-mode API (central-side, persistent connection)
 
   /// Open a long-lived GATT connection to a discovered accessory and
-  /// subscribe to its Tx (notify) characteristic. `onReady(true)` fires
-  /// once subscription is confirmed; subsequent `onAccessoryNotify`
-  /// callbacks deliver bytes pushed by the accessory.
+  /// subscribe to its Tx (notify) characteristic. `onReady(true)`
+  /// fires once subscription is confirmed; subsequent
+  /// `onAccessoryNotify` callbacks deliver bytes pushed by the
+  /// accessory.
   func accessoryConnect(
     deviceId: String,
     onReady: @escaping (Bool) -> Void
@@ -299,7 +180,7 @@ final class BleOob: NSObject {
       callback?.onError("accessoryConnect: unknown deviceId \(deviceId)")
       return
     }
-    guard case .accessory(let profile) = kindByID[deviceId] else {
+    guard let profile = profileByID[deviceId] else {
       onReady(false)
       callback?.onError("accessoryConnect: \(deviceId) is not an accessory")
       return
@@ -342,9 +223,7 @@ final class BleOob: NSObject {
   // MARK: - Helpers
 
   private func scanFilter() -> [CBUUID] {
-    var uuids: [CBUUID] = [Self.serviceUuid]
-    uuids.append(contentsOf: accessoryProfiles.map(\.serviceUuid))
-    return uuids
+    return accessoryProfiles.map(\.serviceUuid)
   }
 
   private func accessoryProfile(matching uuids: [CBUUID]) -> AccessoryProfile? {
@@ -355,88 +234,23 @@ final class BleOob: NSObject {
   }
 
   private func attemptScanIfReady() {
-    guard let c = central, wantsScan, c.state == .poweredOn else { return }
+    guard let c = central else { return }
+    guard wantsScan else { return }
+    guard c.state == .poweredOn else { return }
     if !c.isScanning {
       c.scanForPeripherals(
         withServices: scanFilter(),
-        options: [
-          CBCentralManagerScanOptionAllowDuplicatesKey: false,
-        ]
+        options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
       )
     }
   }
 
-  private func attemptAdvertiseIfReady() {
-    guard let p = peripheral, wantsAdvertise, p.state == .poweredOn else {
-      return
-    }
-    publishServiceIfNeeded()
-    if !p.isAdvertising {
-      p.startAdvertising([
-        CBAdvertisementDataServiceUUIDsKey: [Self.serviceUuid],
-        CBAdvertisementDataLocalNameKey: localName,
-      ])
-    }
-  }
-
-  private func publishServiceIfNeeded() {
-    guard let p = peripheral, notifyCharacteristic == nil else { return }
-    let writeChar = CBMutableCharacteristic(
-      type: Self.writeUuid,
-      properties: [.write, .writeWithoutResponse],
-      value: nil,
-      permissions: [.writeable]
-    )
-    let notifyChar = CBMutableCharacteristic(
-      type: Self.notifyUuid,
-      properties: [.notify, .read],
-      value: nil,
-      permissions: [.readable]
-    )
-    let service = CBMutableService(type: Self.serviceUuid, primary: true)
-    service.characteristics = [writeChar, notifyChar]
-    self.writeCharacteristic = writeChar
-    self.notifyCharacteristic = notifyChar
-    p.add(service)
-  }
-
-  private func sendNotify(to central: CBCentral, value: Data) {
-    guard let p = peripheral, let ch = notifyCharacteristic else { return }
-    let ok = p.updateValue(value, for: ch, onSubscribedCentrals: [central])
-    if !ok {
-      // Queue is full; CoreBluetooth will call
-      // `peripheralManagerIsReady(toUpdateSubscribers:)` when capacity frees.
-      queuedNotifies.append((central, value))
-    } else {
-      pendingCentralBytes.removeValue(forKey: central.identifier.uuidString)
-    }
-  }
-
-  fileprivate func flushQueuedNotifies() {
-    guard let p = peripheral, let ch = notifyCharacteristic else { return }
-    while let (c, v) = queuedNotifies.first {
-      let ok = p.updateValue(v, for: ch, onSubscribedCentrals: [c])
-      if !ok { return }
-      queuedNotifies.removeFirst()
-      pendingCentralBytes.removeValue(forKey: c.identifier.uuidString)
-    }
-  }
-
-  fileprivate func settleExchange(
-    _ deviceId: String,
-    success: Data?,
-    failure: String?
-  ) {
-    guard var state = exchanges[deviceId] else { return }
-    if state.settled { return }
-    state.settled = true
-    exchanges[deviceId] = state
-    if let bytes = success { state.onPeer(bytes) }
-    if let msg = failure { state.onErr(msg) }
-    exchanges.removeValue(forKey: deviceId)
-    if let p = peripheralsByID[deviceId], p.state == .connected {
-      central?.cancelPeripheralConnection(p)
-    }
+  fileprivate func failAccessoryReady(_ id: String, message: String) {
+    guard var conn = accessoryConnections[id] else { return }
+    conn.onReady?(false)
+    conn.onReady = nil
+    accessoryConnections.removeValue(forKey: id)
+    callback?.onError(message)
   }
 }
 
@@ -465,36 +279,24 @@ extension BleOob: CBCentralManagerDelegate {
     let advertisedName =
       advertisementData[CBAdvertisementDataLocalNameKey] as? String
     let name = advertisedName ?? peripheral.name ?? "BLE Device"
-    // Skip our own advertisements (when the OS happens to surface them).
-    if advertisedName == localName { return }
     let advertisedUuids =
       (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
 
-    peripheralsByID[id] = peripheral
-    nameByID[id] = name
-
-    let kind: PeerKind
-    if advertisedUuids.contains(Self.serviceUuid) {
-      kind = .peer
-    } else if let profile = accessoryProfile(matching: advertisedUuids) {
-      kind = .accessory(profile)
-    } else {
-      // Unknown UUID set; skip.
+    guard let profile = accessoryProfile(matching: advertisedUuids) else {
+      // Unknown / unconfigured service UUIDs — skip.
       return
     }
-    kindByID[id] = kind
+
+    peripheralsByID[id] = peripheral
+    nameByID[id] = name
+    profileByID[id] = profile
 
     if seenAdvertisers.insert(id).inserted {
-      switch kind {
-      case .peer:
-        callback?.onDeviceFound(id: id, name: name)
-      case .accessory(let profile):
-        callback?.onAccessoryFound(
-          id: id,
-          name: name,
-          serviceUuid: profile.serviceUuid.uuidString.uppercased()
-        )
-      }
+      callback?.onAccessoryFound(
+        id: id,
+        name: name,
+        serviceUuid: profile.serviceUuid.uuidString.uppercased()
+      )
     }
   }
 
@@ -506,8 +308,6 @@ extension BleOob: CBCentralManagerDelegate {
     let id = peripheral.identifier.uuidString
     if let conn = accessoryConnections[id] {
       peripheral.discoverServices([conn.profile.serviceUuid])
-    } else {
-      peripheral.discoverServices([Self.serviceUuid])
     }
   }
 
@@ -518,12 +318,8 @@ extension BleOob: CBCentralManagerDelegate {
   ) {
     let id = peripheral.identifier.uuidString
     let msg = error?.localizedDescription ?? "Failed to connect"
-    settleExchange(id, success: nil, failure: msg)
-    if var conn = accessoryConnections[id] {
-      conn.onReady?(false)
-      conn.onReady = nil
-      accessoryConnections.removeValue(forKey: id)
-      callback?.onError(msg)
+    if accessoryConnections[id] != nil {
+      failAccessoryReady(id, message: msg)
     }
   }
 
@@ -534,10 +330,6 @@ extension BleOob: CBCentralManagerDelegate {
   ) {
     let id = peripheral.identifier.uuidString
     let name = nameByID[id] ?? "BLE Device"
-    if exchanges[id] != nil {
-      settleExchange(id, success: nil, failure: error?.localizedDescription
-                     ?? "Disconnected before peer token arrived")
-    }
     if var conn = accessoryConnections[id] {
       conn.onReady?(false)
       conn.onReady = nil
@@ -557,31 +349,18 @@ extension BleOob: CBPeripheralDelegate {
   ) {
     let id = peripheral.identifier.uuidString
     if let err = error {
-      settleExchange(id, success: nil, failure: err.localizedDescription)
       failAccessoryReady(id, message: err.localizedDescription)
       return
     }
-    if let conn = accessoryConnections[id] {
-      guard let svc = peripheral.services?.first(where: {
-        $0.uuid == conn.profile.serviceUuid
-      }) else {
-        failAccessoryReady(id, message: "Accessory service not found")
-        return
-      }
-      peripheral.discoverCharacteristics(
-        [conn.profile.rxUuid, conn.profile.txUuid],
-        for: svc
-      )
-      return
-    }
+    guard let conn = accessoryConnections[id] else { return }
     guard let svc = peripheral.services?.first(where: {
-      $0.uuid == Self.serviceUuid
+      $0.uuid == conn.profile.serviceUuid
     }) else {
-      settleExchange(id, success: nil, failure: "Service not found")
+      failAccessoryReady(id, message: "Accessory service not found")
       return
     }
     peripheral.discoverCharacteristics(
-      [Self.writeUuid, Self.notifyUuid],
+      [conn.profile.rxUuid, conn.profile.txUuid],
       for: svc
     )
   }
@@ -593,42 +372,24 @@ extension BleOob: CBPeripheralDelegate {
   ) {
     let id = peripheral.identifier.uuidString
     if let err = error {
-      settleExchange(id, success: nil, failure: err.localizedDescription)
       failAccessoryReady(id, message: err.localizedDescription)
       return
     }
+    guard var conn = accessoryConnections[id] else { return }
     guard let chars = service.characteristics else {
-      settleExchange(id, success: nil, failure: "No characteristics")
       failAccessoryReady(id, message: "No characteristics")
       return
     }
-
-    if var conn = accessoryConnections[id] {
-      let rx = chars.first { $0.uuid == conn.profile.rxUuid }
-      let tx = chars.first { $0.uuid == conn.profile.txUuid }
-      guard let rxChar = rx, let txChar = tx else {
-        failAccessoryReady(id, message: "Missing accessory rx/tx char")
-        return
-      }
-      conn.rxChar = rxChar
-      conn.txChar = txChar
-      accessoryConnections[id] = conn
-      peripheral.setNotifyValue(true, for: txChar)
+    let rx = chars.first { $0.uuid == conn.profile.rxUuid }
+    let tx = chars.first { $0.uuid == conn.profile.txUuid }
+    guard let rxChar = rx, let txChar = tx else {
+      failAccessoryReady(id, message: "Missing accessory rx/tx char")
       return
     }
-
-    let writeChar = chars.first { $0.uuid == Self.writeUuid }
-    let notifyChar = chars.first { $0.uuid == Self.notifyUuid }
-    guard let write = writeChar, let notify = notifyChar else {
-      settleExchange(id, success: nil, failure: "Missing write or notify char")
-      return
-    }
-    if var state = exchanges[id] {
-      state.writeChar = write
-      state.notifyChar = notify
-      exchanges[id] = state
-    }
-    peripheral.setNotifyValue(true, for: notify)
+    conn.rxChar = rxChar
+    conn.txChar = txChar
+    accessoryConnections[id] = conn
+    peripheral.setNotifyValue(true, for: txChar)
   }
 
   func peripheral(
@@ -638,23 +399,18 @@ extension BleOob: CBPeripheralDelegate {
   ) {
     let id = peripheral.identifier.uuidString
     if let err = error {
-      settleExchange(id, success: nil, failure: err.localizedDescription)
       failAccessoryReady(id, message: err.localizedDescription)
       return
     }
-    if let conn = accessoryConnections[id],
-       characteristic.uuid == conn.profile.txUuid {
-      // Subscription confirmed — accessory connection is ready.
-      var c = conn
-      c.onReady?(true)
-      c.onReady = nil
-      accessoryConnections[id] = c
+    guard let conn = accessoryConnections[id],
+          characteristic.uuid == conn.profile.txUuid else {
       return
     }
-    guard characteristic.uuid == Self.notifyUuid,
-          let state = exchanges[id],
-          let writeChar = state.writeChar else { return }
-    peripheral.writeValue(state.myToken, for: writeChar, type: .withResponse)
+    // Subscription confirmed — accessory connection is ready.
+    var c = conn
+    c.onReady?(true)
+    c.onReady = nil
+    accessoryConnections[id] = c
   }
 
   func peripheral(
@@ -663,13 +419,8 @@ extension BleOob: CBPeripheralDelegate {
     error: Error?
   ) {
     let id = peripheral.identifier.uuidString
-    if let err = error {
-      settleExchange(id, success: nil, failure: err.localizedDescription)
-      // Accessory writes don't carry a settle path; surface as a generic
-      // error so the strategy can decide how to recover.
-      if accessoryConnections[id] != nil {
-        callback?.onError("Accessory write failed: \(err.localizedDescription)")
-      }
+    if let err = error, accessoryConnections[id] != nil {
+      callback?.onError("Accessory write failed: \(err.localizedDescription)")
     }
   }
 
@@ -679,91 +430,12 @@ extension BleOob: CBPeripheralDelegate {
     error: Error?
   ) {
     let id = peripheral.identifier.uuidString
-    if let err = error {
-      settleExchange(id, success: nil, failure: err.localizedDescription)
+    guard error == nil,
+          let conn = accessoryConnections[id],
+          characteristic.uuid == conn.profile.txUuid,
+          let value = characteristic.value else {
       return
     }
-    if let conn = accessoryConnections[id],
-       characteristic.uuid == conn.profile.txUuid,
-       let value = characteristic.value {
-      callback?.onAccessoryNotify(id: id, bytes: value)
-      return
-    }
-    guard characteristic.uuid == Self.notifyUuid,
-          let value = characteristic.value else { return }
-    let name = nameByID[id] ?? peripheral.name ?? "BLE Device"
-    settleExchange(id, success: value, failure: nil)
-    callback?.onConnected(id: id, name: name)
-  }
-
-  fileprivate func failAccessoryReady(_ id: String, message: String) {
-    guard var conn = accessoryConnections[id] else { return }
-    conn.onReady?(false)
-    conn.onReady = nil
-    accessoryConnections.removeValue(forKey: id)
-    callback?.onError(message)
-  }
-}
-
-// MARK: - CBPeripheralManagerDelegate (peripheral-side)
-
-@available(iOS 14.0, *)
-extension BleOob: CBPeripheralManagerDelegate {
-  func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
-    switch peripheral.state {
-    case .poweredOn:
-      attemptAdvertiseIfReady()
-    case .poweredOff, .unauthorized, .unsupported:
-      callback?.onError(
-        "Bluetooth peripheral not available: \(peripheral.state.rawValue)"
-      )
-    default:
-      break
-    }
-  }
-
-  func peripheralManager(
-    _ peripheral: CBPeripheralManager,
-    didReceiveWrite requests: [CBATTRequest]
-  ) {
-    for req in requests {
-      if req.characteristic.uuid == Self.writeUuid {
-        let id = req.central.identifier.uuidString
-        pendingCentrals[id] = req.central
-        let bytes = req.value ?? Data()
-        pendingCentralBytes[id] = bytes
-        callback?.onIncomingRequest(
-          id: id,
-          name: id,
-          peerToken: bytes
-        )
-      }
-      peripheral.respond(to: req, withResult: .success)
-    }
-  }
-
-  func peripheralManager(
-    _ peripheral: CBPeripheralManager,
-    central: CBCentral,
-    didSubscribeTo characteristic: CBCharacteristic
-  ) {
-    // No-op. We send via `updateValue(...onSubscribedCentrals:)` from
-    // `accept(deviceId:myToken:)`.
-  }
-
-  func peripheralManager(
-    _ peripheral: CBPeripheralManager,
-    central: CBCentral,
-    didUnsubscribeFrom characteristic: CBCharacteristic
-  ) {
-    let id = central.identifier.uuidString
-    pendingCentrals.removeValue(forKey: id)
-    pendingCentralBytes.removeValue(forKey: id)
-  }
-
-  func peripheralManagerIsReady(
-    toUpdateSubscribers peripheral: CBPeripheralManager
-  ) {
-    flushQueuedNotifies()
+    callback?.onAccessoryNotify(id: id, bytes: value)
   }
 }

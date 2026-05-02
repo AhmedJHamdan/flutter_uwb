@@ -21,11 +21,13 @@ final class IosPeerStrategy: NSObject, RangingStrategy, NISessionDelegate {
   init(
     deviceId: String,
     peerTokenBytes: Data,
-    flutterApi: UwbFlutterApi
+    flutterApi: UwbFlutterApi,
+    existingSession: NISession? = nil
   ) {
     self.deviceId = deviceId
     self.peerTokenBytes = peerTokenBytes
     self.flutterApi = flutterApi
+    self.session = existingSession
     super.init()
   }
 
@@ -37,7 +39,7 @@ final class IosPeerStrategy: NSObject, RangingStrategy, NISessionDelegate {
     guard let peerToken = token else {
       throw PluginError.tokenUnavailable
     }
-    let s = NISession()
+    let s = session ?? NISession()
     s.delegate = self
     self.session = s
     s.run(NINearbyPeerConfiguration(peerToken: peerToken))
@@ -91,4 +93,5 @@ final class IosPeerStrategy: NSObject, RangingStrategy, NISessionDelegate {
       message: error.localizedDescription
     ) { _ in }
   }
+
 }

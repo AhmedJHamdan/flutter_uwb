@@ -584,8 +584,11 @@ class _UwbFlutterApiCodec extends StandardMessageCodec {
     if (value is RangingSample) {
       buffer.putUint8(128);
       writeValue(buffer, value.encode());
-    } else if (value is UwbDevice) {
+    } else if (value is TokenPayload) {
       buffer.putUint8(129);
+      writeValue(buffer, value.encode());
+    } else if (value is UwbDevice) {
+      buffer.putUint8(130);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -598,6 +601,8 @@ class _UwbFlutterApiCodec extends StandardMessageCodec {
       case 128: 
         return RangingSample.decode(readValue(buffer)!);
       case 129: 
+        return TokenPayload.decode(readValue(buffer)!);
+      case 130: 
         return UwbDevice.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -618,6 +623,8 @@ abstract class UwbFlutterApi {
   void onPeerLost(String deviceId);
 
   void onRangingError(String deviceId, String message);
+
+  void onIncomingRequest(UwbDevice device, TokenPayload peerToken);
 
   static void setup(UwbFlutterApi? api, {BinaryMessenger? binaryMessenger}) {
     {
@@ -739,6 +746,34 @@ abstract class UwbFlutterApi {
               'Argument for dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onRangingError was null, expected non-null String.');
           try {
             api.onRangingError(arg_deviceId!, arg_message!);
+            return wrapResponse(empty: true);
+          } on PlatformException catch (e) {
+            return wrapResponse(error: e);
+          }          catch (e) {
+            return wrapResponse(error: PlatformException(code: 'error', message: e.toString()));
+          }
+        });
+      }
+    }
+    {
+      final BasicMessageChannel<Object?> __pigeon_channel = BasicMessageChannel<Object?>(
+          'dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onIncomingRequest', pigeonChannelCodec,
+          binaryMessenger: binaryMessenger);
+      if (api == null) {
+        __pigeon_channel.setMessageHandler(null);
+      } else {
+        __pigeon_channel.setMessageHandler((Object? message) async {
+          assert(message != null,
+          'Argument for dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onIncomingRequest was null.');
+          final List<Object?> args = (message as List<Object?>?)!;
+          final UwbDevice? arg_device = (args[0] as UwbDevice?);
+          assert(arg_device != null,
+              'Argument for dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onIncomingRequest was null, expected non-null UwbDevice.');
+          final TokenPayload? arg_peerToken = (args[1] as TokenPayload?);
+          assert(arg_peerToken != null,
+              'Argument for dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onIncomingRequest was null, expected non-null TokenPayload.');
+          try {
+            api.onIncomingRequest(arg_device!, arg_peerToken!);
             return wrapResponse(empty: true);
           } on PlatformException catch (e) {
             return wrapResponse(error: e);

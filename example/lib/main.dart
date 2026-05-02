@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_uwb/flutter_uwb.dart';
@@ -46,6 +47,7 @@ class _HomeState extends State<_Home> {
   StreamSubscription<RangingSample>? _samplesSub;
   StreamSubscription<String>? _peerLostSub;
   StreamSubscription<RangingErrorEvent>? _errorsSub;
+  StreamSubscription<IncomingRequest>? _incomingSub;
 
   @override
   void initState() {
@@ -76,6 +78,23 @@ class _HomeState extends State<_Home> {
         SnackBar(content: Text('Ranging error (${e.deviceId}): ${e.message}')),
       );
     });
+    _incomingSub = _uwb.incomingRequests.listen(_handleIncomingRequest);
+  }
+
+  Future<void> _handleIncomingRequest(IncomingRequest req) async {
+    final id = req.device.id;
+    if (id == null) return;
+    try {
+      final myToken = await _uwb.getLocalToken(UwbRole.controlee);
+      await _uwb.acceptRequest(id, myToken);
+      await _uwb.startRanging(id);
+      if (mounted) setState(() => _activeRangingId = id);
+    } on UwbException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Auto-accept failed: ${e.message}')),
+      );
+    }
   }
 
   @override
@@ -85,6 +104,7 @@ class _HomeState extends State<_Home> {
     _samplesSub?.cancel();
     _peerLostSub?.cancel();
     _errorsSub?.cancel();
+    _incomingSub?.cancel();
     if (_activeRangingId != null) _uwb.stopRanging();
     if (_scanning) _uwb.stopDiscovery();
     super.dispose();
@@ -118,7 +138,8 @@ class _HomeState extends State<_Home> {
     }
 
     try {
-      await _uwb.startDiscovery('demo');
+      final name = '${Platform.localHostname}-${DateTime.now().millisecondsSinceEpoch % 10000}';
+      await _uwb.startDiscovery(name);
       if (mounted) {
         setState(() {
           _scanning = true;

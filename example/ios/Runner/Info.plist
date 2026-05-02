@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -24,6 +26,19 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Used to discover nearby phones for UWB ranging.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_flutteruwb-uwb._tcp</string>
+		<string>_flutteruwb-uwb._udp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Used to coordinate UWB ranging with nearby phones.</string>
+	<key>NSNearbyInteractionUsageDescription</key>
+	<string>Used to measure precise distance to nearby phones over UWB.</string>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
@@ -41,13 +56,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>CADisableMinimumFrameDurationOnPhone</key>
-	<true/>
-	<key>UIApplicationSupportsIndirectInputEvents</key>
-	<true/>
-	<key>NSNearbyInteractionUsageDescription</key>
-	<string>Used to measure precise distance to nearby phones over UWB.</string>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Used to discover nearby phones for UWB ranging.</string>
 </dict>
 </plist>

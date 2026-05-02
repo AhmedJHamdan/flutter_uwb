@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'flutter_uwb'
-  s.version          = '0.2.0'
+  s.version          = '0.3.1'
   s.summary          = 'Cross-OS BLE OOB + UWB ranging (Android Jetpack UWB, iOS Nearby Interaction).'
   s.description      = <<-DESC
 A Flutter plugin for Ultra-Wideband (UWB) precise ranging. Both platforms use
@@ -20,7 +20,7 @@ ranging itself runs on Jetpack UWB on Android and NearbyInteraction
   s.resource_bundles = {'flutter_uwb_privacy' => ['Resources/PrivacyInfo.xcprivacy']}
   s.dependency 'Flutter'
   s.platform         = :ios, '14.0'
-  s.frameworks       = 'NearbyInteraction', 'CoreBluetooth'
+  s.frameworks       = 'NearbyInteraction', 'CoreBluetooth', 'MultipeerConnectivity'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',

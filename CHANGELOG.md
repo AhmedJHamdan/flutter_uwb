@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.3.1
+
+### Added
+
+- `FlutterUwb.incomingRequests` — broadcast `Stream<IncomingRequest>`
+  that fires when a peer sends us their token over the OOB transport
+  (peer-initiated pairing). The companion class `IncomingRequest`
+  carries the originating `UwbDevice` and the peer's token bytes,
+  ready to feed into a local ranging session via `acceptRequest` +
+  `startRanging`. The example app now auto-accepts incoming requests
+  to demonstrate the symmetric pairing flow.
+
+### Fixed
+
+- **iOS↔iOS ranging on iOS 17+ / iOS 26 no longer hangs.** The plugin
+  now uses `MultipeerConnectivity` for the iOS↔iOS out-of-band token
+  exchange, which keeps an AWDL sidechannel alive during ranging.
+  Previously, with the BLE-only OOB transport introduced in 0.2.0,
+  `NINearbyPeerConfiguration` would stay in `nearbyd #lifecycle
+  DISCOVERY active` indefinitely and never produce samples on
+  iOS 17+. iOS↔Android (FiRa accessory) and Android↔Android paths are
+  unchanged. See Apple Developer Forums thread 802204 for context.
+
+### iOS host apps must add two `Info.plist` keys
+
+Existing apps that integrate `flutter_uwb` need to add the following to
+their `Info.plist`, otherwise iOS↔iOS discovery silently returns no
+peers:
+
+```xml
+<key>NSLocalNetworkUsageDescription</key>
+<string>Used to coordinate UWB ranging with nearby iPhones.</string>
+<key>NSBonjourServices</key>
+<array>
+  <string>_flutteruwb-uwb._tcp</string>
+  <string>_flutteruwb-uwb._udp</string>
+</array>
+```
+
+The Bonjour service name must match exactly. See the README for
+context.
+
+### Removed (internal)
+
+- The dormant BLE GATT peer-mode code path on iOS (`CBPeripheralManager`
+  advertise + custom-service GATT server, `BleOob.exchange` /
+  `BleOob.accept` / `BleOob.decline`). It was no longer invoked once
+  iOS↔iOS pairing moved to MultipeerConnectivity, and removing it
+  shrinks `BleOob.swift` to its accessory-mode responsibilities only.
+  No public Dart API change.
+
+### Unchanged
+
+- All previously-existing Dart API methods, types, and streams keep
+  their current signatures. `incomingRequests` is purely additive —
+  apps that don't listen to it behave exactly as before.
+- Android plugin code and the iOS↔Android (FiRa accessory) /
+  Android↔Android transports.
+
+### Hardware verification
+
+- iPhone 12 (U1, iOS 26.4.1) ↔ iPhone 16 Pro Max (U2, iOS 26.4):
+  pairing succeeds, distance updates in real time. As documented by
+  Apple, the U2 chip on iOS 26 reports `nil` for direction, so
+  azimuth/elevation are only available on the U1 side and only when
+  the phones are roughly facing each other.
+
 ## 0.3.0
 
 ### Changed

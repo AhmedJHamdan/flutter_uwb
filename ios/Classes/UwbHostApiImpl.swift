@@ -11,23 +11,29 @@ extension FlutterError: Error {}
 
 /// Implements `UwbHostApi` on iOS.
 ///
-/// **Discovery / OOB transport** uses BLE GATT via `BleOob.swift` — the same
-/// custom service + characteristic UUIDs as the Android `BleOob.kt`. Each
-/// peer found by `CBCentralManager` becomes a `UwbDevice` keyed by the
-/// peripheral's `identifier.uuidString`; peripheral-side requests are keyed
-/// by the connected central's `identifier.uuidString`.
+/// **Discovery / out-of-band transport** is split by peer kind:
+/// - `PeerOob` (MultipeerConnectivity) handles iOS↔iOS peer
+///   discovery and `NIDiscoveryToken` exchange. iOS 17+ requires an
+///   active AWDL/Bonjour sidechannel for `NINearbyPeerConfiguration`
+///   to actually produce samples; the `MCSession` provides it.
+/// - `BleOob` (CoreBluetooth) handles FiRa accessory discovery and
+///   the long-lived GATT connection used by `IosAccessoryStrategy`
+///   to drive the Apple-protocol handshake.
 ///
 /// **UWB ranging** is dispatched by `UwbDevice.platform`:
-/// - `"ios"` / `"android"` → `IosPeerStrategy` (NINearbyPeerConfiguration).
-/// - `"accessory"`         → `IosAccessoryStrategy` (NINearbyAccessoryConfiguration
-///   over Apple's FiRa accessory BLE protocol).
+/// - `"ios"` / `"android"` → `IosPeerStrategy` (`NINearbyPeerConfiguration`).
+/// - `"accessory"`         → `IosAccessoryStrategy`
+///   (`NINearbyAccessoryConfiguration` over Apple's FiRa accessory
+///   BLE protocol).
 @available(iOS 14.0, *)
 final class UwbHostApiImpl: NSObject, UwbHostApi {
   private let flutterApi: UwbFlutterApi
 
   private let ble = BleOob()
+  private let peer = PeerOob()
 
-  /// Devices observed via BLE OOB, keyed by BLE id.
+  /// All currently-discovered peers (iOS via `PeerOob`, accessories
+  /// via `BleOob`), keyed by the OOB transport's device id.
   private var discovered: [String: UwbDevice] = [:]
 
   private var peerTokens: [String: Data] = [:]
@@ -39,6 +45,7 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     self.flutterApi = UwbFlutterApi(binaryMessenger: messenger)
     super.init()
     ble.callback = self
+    peer.callback = self
   }
 
   // MARK: - Accessory profiles
@@ -59,10 +66,8 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     discovered.removeAll()
     peerTokens.removeAll()
     failPendingExchanges(with: PluginError.cancelled)
-    ble.start(
-      localName: localName,
-      accessoryProfiles: bleAccessoryProfiles()
-    )
+    ble.start(accessoryProfiles: bleAccessoryProfiles())
+    peer.start(localName: localName)
     return VoidResult(ok: true)
   }
 
@@ -97,6 +102,7 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
 
   func stopDiscovery() throws -> VoidResult {
     ble.stop()
+    peer.stop()
     discovered.removeAll()
     peerTokens.removeAll()
     failPendingExchanges(with: PluginError.cancelled)
@@ -108,13 +114,16 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
   }
 
   func acceptRequest(deviceId: String, myToken: TokenPayload) throws -> VoidResult {
+    // Incoming requests on iOS only originate from `PeerOob`. The
+    // accessory path has no symmetric "incoming request" concept —
+    // accessories are discovered and connected to, not the reverse.
     let token = myToken.bytes?.data ?? Data()
-    ble.accept(deviceId: deviceId, myToken: token)
+    peer.accept(deviceId: deviceId, myToken: token)
     return VoidResult(ok: true)
   }
 
   func declineRequest(deviceId: String) throws -> VoidResult {
-    ble.decline(deviceId: deviceId)
+    peer.decline(deviceId: deviceId)
     return VoidResult(ok: true)
   }
 
@@ -125,24 +134,29 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
   ) {
     let token = myToken.bytes?.data ?? Data()
     pendingExchanges[deviceId] = completion
-    ble.exchange(
+    let onPeer: (Data) -> Void = { [weak self] bytes in
+      guard let self = self else { return }
+      self.peerTokens[deviceId] = bytes
+      if let pending = self.pendingExchanges.removeValue(forKey: deviceId) {
+        pending(.success(TokenPayload(
+          bytes: FlutterStandardTypedData(bytes: bytes)
+        )))
+      }
+    }
+    let onErr: (String) -> Void = { [weak self] message in
+      guard let self = self else { return }
+      if let pending = self.pendingExchanges.removeValue(forKey: deviceId) {
+        pending(.failure(PluginError.transport(message)))
+      }
+    }
+    // Token exchange on iOS only happens with iOS peers via `PeerOob`.
+    // Accessory ranging uses the Apple FiRa handshake driven by
+    // `IosAccessoryStrategy`, not a token exchange.
+    peer.exchange(
       deviceId: deviceId,
       myToken: token,
-      onPeer: { [weak self] bytes in
-        guard let self = self else { return }
-        self.peerTokens[deviceId] = bytes
-        if let pending = self.pendingExchanges.removeValue(forKey: deviceId) {
-          pending(.success(TokenPayload(
-            bytes: FlutterStandardTypedData(bytes: bytes)
-          )))
-        }
-      },
-      onErr: { [weak self] message in
-        guard let self = self else { return }
-        if let pending = self.pendingExchanges.removeValue(forKey: deviceId) {
-          pending(.failure(PluginError.transport(message)))
-        }
-      }
+      onPeer: onPeer,
+      onErr: onErr
     )
   }
 
@@ -234,7 +248,8 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
       return IosPeerStrategy(
         deviceId: device.id ?? "",
         peerTokenBytes: bytes,
-        flutterApi: flutterApi
+        flutterApi: flutterApi,
+        existingSession: localTokenSession
       )
     case "accessory":
       guard #available(iOS 15.0, *) else {
@@ -278,16 +293,28 @@ enum PluginError: LocalizedError {
   }
 }
 
-// MARK: - BleOob.Callback
+// MARK: - BleOob.Callback / PeerOob.Callback
 
 @available(iOS 14.0, *)
-extension UwbHostApiImpl: BleOob.Callback {
-  func onDeviceFound(id: String, name: String) {
+extension UwbHostApiImpl: BleOob.Callback, PeerOob.Callback {
+  // MARK: PeerOob — iOS↔iOS peer discovery + token exchange
+
+  func onPeerDeviceFound(id: String, name: String) {
     let device = UwbDevice(id: id, name: name, platform: "ios")
     let isNew = discovered[id] == nil
     discovered[id] = device
     if isNew {
       flutterApi.onDeviceFound(device: device) { _ in }
+    }
+  }
+
+  func onPeerDeviceLost(id: String) {
+    if discovered.removeValue(forKey: id) != nil {
+      flutterApi.onDeviceLost(deviceId: id) { _ in }
+    }
+    peerTokens.removeValue(forKey: id)
+    if let pending = pendingExchanges.removeValue(forKey: id) {
+      pending(.failure(PluginError.cancelled))
     }
   }
 
@@ -299,6 +326,10 @@ extension UwbHostApiImpl: BleOob.Callback {
     if isNew {
       flutterApi.onDeviceFound(device: device) { _ in }
     }
+    flutterApi.onIncomingRequest(
+      device: device,
+      peerToken: TokenPayload(bytes: FlutterStandardTypedData(bytes: peerToken))
+    ) { _ in }
   }
 
   func onConnected(id: String, name: String) {
@@ -324,7 +355,7 @@ extension UwbHostApiImpl: BleOob.Callback {
     flutterApi.onRangingError(deviceId: id, message: message) { _ in }
   }
 
-  // Accessory mode -----------------------------------------------------
+  // MARK: BleOob — FiRa accessory discovery + GATT notifications
 
   func onAccessoryFound(id: String, name: String, serviceUuid: String) {
     let vendorTag = registeredProfiles[serviceUuid.uppercased()]?.vendorTag

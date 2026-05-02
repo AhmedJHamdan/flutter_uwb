@@ -12,7 +12,7 @@ discovery on Android and iOS.
 
 ```yaml
 dependencies:
-  flutter_uwb: ^0.3.0
+  flutter_uwb: ^0.3.1
 ```
 
 ---
@@ -188,14 +188,36 @@ must request the runtime permissions:
 
 ### iOS
 
-Add to your `Info.plist`:
+Add the following keys to your app's `Info.plist`. The `usage description`
+strings are shown to the user in the system permission prompts, so phrase
+them in a way that fits your product.
 
 ```xml
+<!-- Required: shown when the app first uses Nearby Interaction (UWB). -->
 <key>NSNearbyInteractionUsageDescription</key>
 <string>Used to measure precise distance to nearby devices over UWB.</string>
+
+<!-- Required: shown when the app first scans / advertises over BLE. -->
 <key>NSBluetoothAlwaysUsageDescription</key>
 <string>Used to discover nearby devices for UWB ranging.</string>
+
+<!-- Required for iOS↔iOS pairing on iOS 17+. The plugin uses
+     MultipeerConnectivity to keep an AWDL sidechannel alive while
+     ranging — without it, NearbyInteraction silently never produces
+     samples. The Bonjour service name MUST match exactly. -->
+<key>NSLocalNetworkUsageDescription</key>
+<string>Used to coordinate UWB ranging with nearby iPhones.</string>
+<key>NSBonjourServices</key>
+<array>
+  <string>_flutteruwb-uwb._tcp</string>
+  <string>_flutteruwb-uwb._udp</string>
+</array>
 ```
+
+> If your app talks only to Android peers or to FiRa accessories, the
+> `NSLocalNetworkUsageDescription` and `NSBonjourServices` keys are not
+> strictly required — but adding them is harmless and keeps iOS↔iOS
+> ranging working out of the box if a user pairs two iPhones.
 
 ---
 
@@ -209,6 +231,14 @@ or newer). Accessory/controlee mode requires Pixel 7 Pro+ on Android 14+.
 **iOS** — iPhone with U1 or U2 chip (iPhone 11+, excluding SE 2nd/3rd gen)
 on iOS 14+ for peer mode. Accessory mode requires **iOS 15+**.
 `isUwbAvailable()` returns `false` on the simulator.
+
+> **Direction (azimuth / elevation) on iOS 26.** Apple disabled
+> `supportsDirectionMeasurement` for the U2 chip on iOS 26, so phones
+> with the U2 (iPhone 15 Pro / Pro Max, iPhone 16 series) report `null`
+> for `azimuthDegrees` / `elevationDegrees`. Distance is unaffected.
+> When pairing a U1 phone with a U2 phone, the U1 side will still
+> produce direction values, but only when the phones are roughly
+> facing each other. See Apple Developer Forums thread 822522.
 
 ---
 

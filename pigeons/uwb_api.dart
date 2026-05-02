@@ -107,4 +107,5 @@ abstract class UwbFlutterApi {
   void onRangingSample(RangingSample sample);
   void onPeerLost(String deviceId);
   void onRangingError(String deviceId, String message);
+  void onIncomingRequest(UwbDevice device, TokenPayload peerToken);
 }
