@@ -4,40 +4,42 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
-import androidx.core.uwb.RangingParameters
-import androidx.core.uwb.RangingResult
-import androidx.core.uwb.UwbAddress
-import androidx.core.uwb.UwbClientSessionScope
-import androidx.core.uwb.UwbComplexChannel
 import androidx.core.uwb.UwbControleeSessionScope
 import androidx.core.uwb.UwbControllerSessionScope
 import androidx.core.uwb.UwbManager
-import androidx.core.uwb.UwbDevice as JetpackUwbDevice
 import com.ahmedhamdan.flutter_uwb.oob.BleOob
 import com.ahmedhamdan.flutter_uwb.oob.TokenStore
+import com.ahmedhamdan.flutter_uwb.strategy.AndroidControleeStrategy
+import com.ahmedhamdan.flutter_uwb.strategy.AndroidPeerStrategy
+import com.ahmedhamdan.flutter_uwb.strategy.RangingStrategy
 import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.UUID
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 
 /**
  * Android implementation of Pigeon's UwbHostApi.
  *
- * Token wire format (9 bytes, little-endian):
+ * Token wire format (peer-mode, 9 bytes little-endian):
  *   [0]   role (0=controller, 1=controlee)
  *   [1..2] shortAddr (u16)
  *   [3]   channel (u8, controller only)
  *   [4]   preambleIndex (u8, controller only)
  *   [5..8] sessionId (u32, controller only)
+ *
+ * Ranging is dispatched by `UwbDevice.platform`:
+ * - "android" / "ios"      -> [AndroidPeerStrategy] (peer mode)
+ * - "accessory"            -> [AndroidControleeStrategy] (Apple-protocol
+ *                            controlee role; Android-as-accessory)
+ * - "accessory:<vendor>"   -> currently routes to AndroidControleeStrategy.
+ *                            Custom vendor adapter pluging is a follow-up.
  */
 class UwbHostApiImpl(
     private val appContext: Context,
@@ -52,10 +54,13 @@ class UwbHostApiImpl(
     private val discovered = LinkedHashMap<String, UwbDevice>()
 
     private var uwbManager: UwbManager? = null
+    /** Cached for [getLocalToken]; not used by strategies. */
     private var controllerScope: UwbControllerSessionScope? = null
     private var controleeScope: UwbControleeSessionScope? = null
     private var localSessionId: Int = 0
-    private var rangingJob: Job? = null
+
+    /** Currently active ranging strategy, if any. */
+    private var activeStrategy: RangingStrategy? = null
 
     init {
         ble.setCallback(object : BleOob.Callback {
@@ -76,15 +81,44 @@ class UwbHostApiImpl(
                 if (discovered.remove(id) != null) {
                     flutterApi.onDeviceLost(id) {}
                 }
+                val s = activeStrategy
+                if (s?.deviceId == id) {
+                    s.stop()
+                    activeStrategy = null
+                }
             }
             override fun onError(msg: String) {
                 Log.e(tag, "BLE error: $msg")
+            }
+            override fun onAccessoryRequest(
+                id: String,
+                name: String,
+                serviceUuid: UUID,
+                bytes: ByteArray,
+            ) {
+                // Surface the iPhone-host as a discovered "accessory:<tag>"
+                // device so the app can call startRanging against it.
+                val key = serviceUuid.toString().uppercase()
+                val tag = registeredProfiles[key]?.vendorTag
+                val platform = if (tag != null) "accessory:$tag" else "accessory"
+                val isNew = !discovered.containsKey(id)
+                val device = UwbDevice(id = id, name = name, platform = platform)
+                discovered[id] = device
+                if (isNew) flutterApi.onDeviceFound(device) {}
+
+                // Route the bytes to the active controlee strategy if it
+                // matches this peer.
+                val s = activeStrategy as? AndroidControleeStrategy ?: return
+                if (s.deviceId == id) {
+                    mainScope.launch { s.handleAccessoryRequest(bytes) }
+                }
             }
         })
     }
 
     // ---------------- BLE OOB ----------------
     override fun startDiscovery(localName: String): VoidResult = try {
+        ble.setAccessoryProfiles(bleAccessoryProfiles())
         ble.start(localName)
         VoidResult(ok = true)
     } catch (t: Throwable) {
@@ -121,23 +155,36 @@ class UwbHostApiImpl(
     }
 
     // ---------------- Accessory profile registration ----------------
-    // Stash registrations so the Phase D Android-side controlee strategy
-    // can consume them. The Android BLE-OOB plumbing for accessory mode
-    // is hardware-gated; for now this is store-only.
-    private val registeredProfiles = LinkedHashMap<String, AccessoryProfile>()
+    private data class RegisteredProfile(
+        val bleProfile: BleOob.AccessoryProfile,
+        val vendorTag: String?,
+    )
+    private val registeredProfiles = LinkedHashMap<String, RegisteredProfile>()
+
+    private fun bleAccessoryProfiles(): List<BleOob.AccessoryProfile> =
+        registeredProfiles.values.map { it.bleProfile }
 
     override fun registerAccessoryProfile(profile: AccessoryProfile): VoidResult {
         val svc = profile.serviceUuid
             ?: return VoidResult(ok = false, error = "serviceUuid required")
-        if (profile.rxUuid == null || profile.txUuid == null) {
-            return VoidResult(ok = false, error = "rxUuid and txUuid required")
-        }
-        registeredProfiles[svc.uppercase()] = profile
+        val rx = profile.rxUuid
+            ?: return VoidResult(ok = false, error = "rxUuid required")
+        val tx = profile.txUuid
+            ?: return VoidResult(ok = false, error = "txUuid required")
+        val key = svc.uppercase()
+        val bleProfile = BleOob.AccessoryProfile(
+            serviceUuid = UUID.fromString(svc),
+            rxUuid = UUID.fromString(rx),
+            txUuid = UUID.fromString(tx),
+        )
+        registeredProfiles[key] = RegisteredProfile(bleProfile, profile.vendorTag)
+        ble.setAccessoryProfiles(bleAccessoryProfiles())
         return VoidResult(ok = true)
     }
 
     override fun unregisterAccessoryProfile(serviceUuid: String): VoidResult {
         registeredProfiles.remove(serviceUuid.uppercase())
+        ble.setAccessoryProfiles(bleAccessoryProfiles())
         return VoidResult(ok = true)
     }
 
@@ -250,132 +297,104 @@ class UwbHostApiImpl(
     }
 
     override fun startRanging(deviceId: String, callback: (Result<VoidResult>) -> Unit) {
-        val peerToken = TokenStore.getPeer(deviceId)
-        if (peerToken == null || peerToken.isEmpty()) {
+        activeStrategy?.stop()
+        activeStrategy = null
+
+        val device = discovered[deviceId]
+        if (device == null) {
             callback(Result.success(VoidResult(
                 ok = false,
-                error = "No peer token for $deviceId. Run exchangeTokens first.",
+                error = "Unknown deviceId $deviceId. Run startDiscovery first.",
             )))
-            return
-        }
-        val peer = try {
-            Token.parse(peerToken)
-        } catch (t: Throwable) {
-            callback(Result.success(VoidResult(ok = false, error = "Invalid peer token: ${t.message}")))
             return
         }
 
         mainScope.launch {
             try {
-                val mgr = uwbManager ?: UwbManager.createInstance(appContext).also { uwbManager = it }
-                val (scope, params) = buildSessionFor(peer, mgr)
-
-                rangingJob?.cancel()
-                rangingJob = mainScope.launch {
-                    scope.prepareSession(params)
-                        .onEach { result -> emitRangingResult(deviceId, result) }
-                        .catch { t ->
-                            Log.e(tag, "ranging flow error", t)
-                            flutterApi.onRangingError(deviceId, t.message ?: "ranging error") {}
-                        }
-                        .collect { /* drained by onEach */ }
+                val mgr = uwbManager
+                    ?: UwbManager.createInstance(appContext).also { uwbManager = it }
+                val strategy = makeStrategy(device, mgr)
+                if (strategy == null) {
+                    callback(Result.success(VoidResult(
+                        ok = false,
+                        error = "Cannot range against platform '${device.platform}'",
+                    )))
+                    return@launch
                 }
+                activeStrategy = strategy
+                strategy.start()
                 callback(Result.success(VoidResult(ok = true)))
             } catch (t: Throwable) {
                 Log.e(tag, "startRanging failed", t)
-                callback(Result.success(VoidResult(ok = false, error = t.message ?: "startRanging error")))
+                activeStrategy = null
+                callback(Result.success(VoidResult(
+                    ok = false,
+                    error = t.message ?: "startRanging error",
+                )))
             }
         }
     }
 
     override fun stopRanging(callback: (Result<VoidResult>) -> Unit) {
         try {
-            rangingJob?.cancel()
-            rangingJob = null
+            activeStrategy?.stop()
+            activeStrategy = null
             callback(Result.success(VoidResult(ok = true)))
         } catch (t: Throwable) {
-            callback(Result.success(VoidResult(ok = false, error = t.message ?: "stopRanging error")))
+            callback(Result.success(VoidResult(
+                ok = false,
+                error = t.message ?: "stopRanging error",
+            )))
         }
     }
 
-    private suspend fun buildSessionFor(
-        peer: Token.Fields,
+    private fun makeStrategy(
+        device: UwbDevice,
         mgr: UwbManager,
-    ): Pair<UwbClientSessionScope, RangingParameters> = when (peer.role) {
-        UwbRole.CONTROLLER -> {
-            // Peer is controller → I am controlee. Use peer's channel/sessionId.
-            val scope = controleeScope ?: mgr.controleeSessionScope().also { controleeScope = it }
-            val params = RangingParameters(
-                /* uwbConfigType  */ RangingParameters.CONFIG_UNICAST_DS_TWR,
-                /* sessionId      */ peer.sessionId,
-                /* subSessionId   */ 0,
-                /* sessionKeyInfo */ null,
-                /* subSessionKey  */ null,
-                /* complexChannel */ UwbComplexChannel(peer.channel.toInt(), peer.preambleIndex.toInt()),
-                /* peerDevices    */ listOf(JetpackUwbDevice(UwbAddress(peer.shortAddressBytes()))),
-                /* updateRateType */ RangingParameters.RANGING_UPDATE_RATE_AUTOMATIC,
-            )
-            scope to params
-        }
-        UwbRole.CONTROLEE -> {
-            // Peer is controlee → I am controller. Use my channel/sessionId.
-            val scope = controllerScope ?: mgr.controllerSessionScope().also { controllerScope = it }
-            val params = RangingParameters(
-                RangingParameters.CONFIG_UNICAST_DS_TWR,
-                if (localSessionId != 0) localSessionId else Random.nextInt(1, Int.MAX_VALUE).also { localSessionId = it },
-                0,
-                null,
-                null,
-                scope.uwbComplexChannel,
-                listOf(JetpackUwbDevice(UwbAddress(peer.shortAddressBytes()))),
-                RangingParameters.RANGING_UPDATE_RATE_AUTOMATIC,
-            )
-            scope to params
-        }
-    }
-
-    private fun emitRangingResult(deviceId: String, result: RangingResult) {
-        when (result) {
-            is RangingResult.RangingResultPosition -> {
-                val pos = result.position
-                val sample = RangingSample(
-                    deviceId = deviceId,
-                    distanceMeters = pos.distance?.value?.toDouble(),
-                    azimuthDegrees = pos.azimuth?.value?.toDouble(),
-                    elevationDegrees = pos.elevation?.value?.toDouble(),
-                    elapsedRealtimeNanos = pos.elapsedRealtimeNanos,
+    ): RangingStrategy? {
+        val id = device.id ?: return null
+        val platform = device.platform ?: "android"
+        return when {
+            platform == "android" || platform == "ios" -> {
+                val token = TokenStore.getPeer(id)
+                if (token == null || token.isEmpty()) {
+                    throw IllegalStateException(
+                        "No peer token for $id. Run exchangeTokens (or acceptRequest) first.",
+                    )
+                }
+                AndroidPeerStrategy(
+                    deviceId = id,
+                    peerTokenBytes = token,
+                    uwbManager = mgr,
+                    flutterApi = flutterApi,
+                    rangingScope = mainScope,
                 )
-                flutterApi.onRangingSample(sample) {}
             }
-            is RangingResult.RangingResultPeerDisconnected -> {
-                flutterApi.onPeerLost(deviceId) {}
+            platform == "accessory" || platform.startsWith("accessory:") -> {
+                AndroidControleeStrategy(
+                    deviceId = id,
+                    ble = ble,
+                    uwbManager = mgr,
+                    flutterApi = flutterApi,
+                    rangingScope = mainScope,
+                )
             }
+            else -> null
         }
     }
 
     fun dispose() {
-        try { rangingJob?.cancel() } catch (_: Throwable) {}
+        try { activeStrategy?.stop() } catch (_: Throwable) {}
+        activeStrategy = null
         try { mainScope.cancel() } catch (_: Throwable) {}
         try { ble.stop() } catch (_: Throwable) {}
         discovered.clear()
+        registeredProfiles.clear()
         TokenStore.clear()
     }
 
-    // ---------------- Token codec ----------------
+    // ---------------- Token codec (peer mode, getLocalToken) ----------------
     private object Token {
-        data class Fields(
-            val role: UwbRole,
-            val shortAddr: Short,
-            val channel: Byte,
-            val preambleIndex: Byte,
-            val sessionId: Int,
-        ) {
-            fun shortAddressBytes(): ByteArray = byteArrayOf(
-                (shortAddr.toInt() and 0xFF).toByte(),
-                ((shortAddr.toInt() ushr 8) and 0xFF).toByte(),
-            )
-        }
-
         fun build(
             role: UwbRole,
             addr: ByteArray,
@@ -394,19 +413,5 @@ class UwbHostApiImpl(
             bb.putInt(sessionId)
             return bb.array()
         }
-
-        fun parse(bytes: ByteArray): Fields {
-            require(bytes.size >= 9) { "Token must be ≥9 bytes, got ${bytes.size}" }
-            val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            val roleRaw = bb.get().toInt() and 0xFF
-            val role = UwbRole.ofRaw(roleRaw)
-                ?: throw IllegalArgumentException("Unknown role byte: $roleRaw")
-            val shortAddr = bb.short
-            val channel = bb.get()
-            val preambleIndex = bb.get()
-            val sessionId = bb.int
-            return Fields(role, shortAddr, channel, preambleIndex, sessionId)
-        }
-
     }
 }

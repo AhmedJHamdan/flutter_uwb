@@ -32,12 +32,30 @@ import java.util.UUID
 
 class BleOob(private val ctx: Context) {
 
+    /** A registered Apple-FiRa accessory profile. Mirror of the iOS struct. */
+    data class AccessoryProfile(
+        val serviceUuid: UUID,
+        val rxUuid: UUID,
+        val txUuid: UUID,
+    )
+
     interface Callback {
         fun onDeviceFound(id: String, name: String)
         fun onIncomingRequest(id: String, name: String)
         fun onConnected(id: String, name: String)
         fun onDisconnected(id: String, name: String)
         fun onError(msg: String)
+        /**
+         * Apple-protocol bytes received on a registered accessory profile's
+         * Rx characteristic. The host (UwbHostApiImpl) routes these to the
+         * active [AndroidControleeStrategy].
+         */
+        fun onAccessoryRequest(
+            id: String,
+            name: String,
+            serviceUuid: UUID,
+            bytes: ByteArray,
+        ) {}
     }
     private var cb: Callback? = null
     fun setCallback(c: Callback) { cb = c }
@@ -46,6 +64,11 @@ class BleOob(private val ctx: Context) {
     private val CHAR_WRITE = UUID.fromString("b2d2a7f9-8c2a-4d7e-a89d-1d3a4e5f6a70")
     private val CHAR_NOTIFY = UUID.fromString("c9a0a82b-0c5a-4b8e-9e2e-5dbe2d08f7c3")
     private val CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+    /** Registered accessory profiles; populated by [setAccessoryProfiles]. */
+    private var accessoryProfiles: List<AccessoryProfile> = emptyList()
+    /** Tx characteristic per profile, populated when the GATT server is up. */
+    private val accessoryTxChars = HashMap<UUID, BluetoothGattCharacteristic>()
 
     private val btMgr by lazy { ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager }
     private val adapter: BluetoothAdapter? get() = btMgr.adapter
@@ -105,9 +128,25 @@ class BleOob(private val ctx: Context) {
                 value: ByteArray,
             ) {
                 if (characteristic.uuid == CHAR_WRITE) {
+                    // Peer-mode token write.
                     TokenStore.putPeer(device.address, value)
                     pendingCentrals[device.address] = device
                     cb?.onIncomingRequest(device.address, deviceNameSafe(device))
+                } else {
+                    // Accessory-mode write — match the characteristic to a
+                    // registered profile's Rx UUID.
+                    val profile = accessoryProfiles.firstOrNull {
+                        it.rxUuid == characteristic.uuid
+                    }
+                    if (profile != null) {
+                        pendingCentrals[device.address] = device
+                        cb?.onAccessoryRequest(
+                            id = device.address,
+                            name = deviceNameSafe(device),
+                            serviceUuid = profile.serviceUuid,
+                            bytes = value,
+                        )
+                    }
                 }
                 if (responseNeeded) {
                     gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
@@ -135,17 +174,60 @@ class BleOob(private val ctx: Context) {
         }
         gattServer?.addService(service)
 
+        // Add accessory-mode services (one per registered profile) so an
+        // iPhone-host or Apple-protocol accessory can connect to Android
+        // and drive the multi-message exchange against the controlee
+        // strategy.
+        accessoryTxChars.clear()
+        for (profile in accessoryProfiles) {
+            val accessoryService = BluetoothGattService(
+                profile.serviceUuid,
+                BluetoothGattService.SERVICE_TYPE_PRIMARY,
+            )
+            accessoryService.addCharacteristic(
+                BluetoothGattCharacteristic(
+                    profile.rxUuid,
+                    BluetoothGattCharacteristic.PROPERTY_WRITE
+                        or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+                    BluetoothGattCharacteristic.PERMISSION_WRITE,
+                ),
+            )
+            val txChar = BluetoothGattCharacteristic(
+                profile.txUuid,
+                BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+                BluetoothGattCharacteristic.PERMISSION_READ,
+            ).apply {
+                addDescriptor(
+                    BluetoothGattDescriptor(
+                        CCCD,
+                        BluetoothGattDescriptor.PERMISSION_READ
+                            or BluetoothGattDescriptor.PERMISSION_WRITE,
+                    ),
+                )
+            }
+            accessoryService.addCharacteristic(txChar)
+            accessoryTxChars[profile.serviceUuid] = txChar
+            gattServer?.addService(accessoryService)
+        }
+
         advertiser = a.bluetoothLeAdvertiser
+        val adData = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
+            .addServiceUuid(ParcelUuid(SVC))
+        // Include the first registered accessory profile's UUID in the
+        // ad packet. Multi-profile advertising is constrained by the
+        // 31-byte ad budget; for now a single profile is enough for the
+        // v2 cross-platform path.
+        accessoryProfiles.firstOrNull()?.let {
+            adData.addServiceUuid(ParcelUuid(it.serviceUuid))
+        }
         advertiser?.startAdvertising(
             AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                 .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
                 .setConnectable(true)
                 .build(),
-            AdvertiseData.Builder()
-                .setIncludeDeviceName(true)
-                .addServiceUuid(ParcelUuid(SVC))
-                .build(),
+            adData.build(),
             advertiseCallback,
         )
 
@@ -169,7 +251,33 @@ class BleOob(private val ctx: Context) {
         gattServer = null
         pendingCentrals.clear()
         seenAdvertisers.clear()
+        accessoryTxChars.clear()
         TokenStore.clear()
+    }
+
+    /**
+     * Update the registered accessory profile list. If the GATT server
+     * is currently up the change is picked up the next time [start] is
+     * called; the host typically calls `stop()` then `start()` after a
+     * register/unregister.
+     */
+    fun setAccessoryProfiles(profiles: List<AccessoryProfile>) {
+        accessoryProfiles = profiles
+    }
+
+    /**
+     * Push notify bytes via a registered accessory profile's Tx
+     * characteristic to the central that initiated the exchange.
+     *
+     * `deviceId` is the BLE address of the central (matches the address
+     * surfaced via [Callback.onAccessoryRequest]).
+     */
+    fun accessoryNotify(deviceId: String, bytes: ByteArray) {
+        val device = pendingCentrals[deviceId] ?: return
+        // The Tx char is the first registered accessory profile's tx char
+        // — multi-profile fan-out lives in a follow-up.
+        val tx = accessoryTxChars.values.firstOrNull() ?: return
+        notify(device, tx, bytes)
     }
 
     private val scanCb = object : ScanCallback() {
