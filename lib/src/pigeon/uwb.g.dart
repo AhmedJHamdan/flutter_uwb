@@ -62,6 +62,52 @@ class UwbDevice {
   }
 }
 
+/// BLE service + characteristic triplet describing an accessory.
+///
+/// `serviceUuid` is the GATT service the iPhone/Android scans for and
+/// connects to. `rxUuid` is the characteristic the host writes to (the
+/// accessory's "Rx"); `txUuid` is the one the accessory pushes via
+/// notifications (its "Tx").
+///
+/// `vendorTag` is appended to `UwbDevice.platform` as `accessory:<tag>` so
+/// the Dart side can filter; pass `null` for the built-in Apple-FiRa
+/// handling (`UwbDevice.platform == "accessory"`).
+class AccessoryProfile {
+  AccessoryProfile({
+    this.serviceUuid,
+    this.rxUuid,
+    this.txUuid,
+    this.vendorTag,
+  });
+
+  String? serviceUuid;
+
+  String? rxUuid;
+
+  String? txUuid;
+
+  String? vendorTag;
+
+  Object encode() {
+    return <Object?>[
+      serviceUuid,
+      rxUuid,
+      txUuid,
+      vendorTag,
+    ];
+  }
+
+  static AccessoryProfile decode(Object result) {
+    result as List<Object?>;
+    return AccessoryProfile(
+      serviceUuid: result[0] as String?,
+      rxUuid: result[1] as String?,
+      txUuid: result[2] as String?,
+      vendorTag: result[3] as String?,
+    );
+  }
+}
+
 class TokenPayload {
   TokenPayload({
     this.bytes,
@@ -154,14 +200,17 @@ class _UwbHostApiCodec extends StandardMessageCodec {
   const _UwbHostApiCodec();
   @override
   void writeValue(WriteBuffer buffer, Object? value) {
-    if (value is TokenPayload) {
+    if (value is AccessoryProfile) {
       buffer.putUint8(128);
       writeValue(buffer, value.encode());
-    } else if (value is UwbDevice) {
+    } else if (value is TokenPayload) {
       buffer.putUint8(129);
       writeValue(buffer, value.encode());
-    } else if (value is VoidResult) {
+    } else if (value is UwbDevice) {
       buffer.putUint8(130);
+      writeValue(buffer, value.encode());
+    } else if (value is VoidResult) {
+      buffer.putUint8(131);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -172,10 +221,12 @@ class _UwbHostApiCodec extends StandardMessageCodec {
   Object? readValueOfType(int type, ReadBuffer buffer) {
     switch (type) {
       case 128: 
-        return TokenPayload.decode(readValue(buffer)!);
+        return AccessoryProfile.decode(readValue(buffer)!);
       case 129: 
-        return UwbDevice.decode(readValue(buffer)!);
+        return TokenPayload.decode(readValue(buffer)!);
       case 130: 
+        return UwbDevice.decode(readValue(buffer)!);
+      case 131: 
         return VoidResult.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -310,6 +361,60 @@ class UwbHostApi {
     );
     final List<Object?>? __pigeon_replyList =
         await __pigeon_channel.send(<Object?>[deviceId]) as List<Object?>?;
+    if (__pigeon_replyList == null) {
+      throw _createConnectionError(__pigeon_channelName);
+    } else if (__pigeon_replyList.length > 1) {
+      throw PlatformException(
+        code: __pigeon_replyList[0]! as String,
+        message: __pigeon_replyList[1] as String?,
+        details: __pigeon_replyList[2],
+      );
+    } else if (__pigeon_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (__pigeon_replyList[0] as VoidResult?)!;
+    }
+  }
+
+  Future<VoidResult> registerAccessoryProfile(AccessoryProfile profile) async {
+    const String __pigeon_channelName = 'dev.flutter.pigeon.flutter_uwb.UwbHostApi.registerAccessoryProfile';
+    final BasicMessageChannel<Object?> __pigeon_channel = BasicMessageChannel<Object?>(
+      __pigeon_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: __pigeon_binaryMessenger,
+    );
+    final List<Object?>? __pigeon_replyList =
+        await __pigeon_channel.send(<Object?>[profile]) as List<Object?>?;
+    if (__pigeon_replyList == null) {
+      throw _createConnectionError(__pigeon_channelName);
+    } else if (__pigeon_replyList.length > 1) {
+      throw PlatformException(
+        code: __pigeon_replyList[0]! as String,
+        message: __pigeon_replyList[1] as String?,
+        details: __pigeon_replyList[2],
+      );
+    } else if (__pigeon_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (__pigeon_replyList[0] as VoidResult?)!;
+    }
+  }
+
+  Future<VoidResult> unregisterAccessoryProfile(String serviceUuid) async {
+    const String __pigeon_channelName = 'dev.flutter.pigeon.flutter_uwb.UwbHostApi.unregisterAccessoryProfile';
+    final BasicMessageChannel<Object?> __pigeon_channel = BasicMessageChannel<Object?>(
+      __pigeon_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: __pigeon_binaryMessenger,
+    );
+    final List<Object?>? __pigeon_replyList =
+        await __pigeon_channel.send(<Object?>[serviceUuid]) as List<Object?>?;
     if (__pigeon_replyList == null) {
       throw _createConnectionError(__pigeon_channelName);
     } else if (__pigeon_replyList.length > 1) {

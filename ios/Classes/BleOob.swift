@@ -64,8 +64,10 @@ final class BleOob: NSObject {
 
     // Accessory mode ---------------------------------------------------
     /// A peripheral advertising one of the registered accessory service
-    /// UUIDs has been seen.
-    func onAccessoryFound(id: String, name: String)
+    /// UUIDs has been seen. `serviceUuid` is the matched profile's service
+    /// UUID (uppercase, hyphenated) — used by the host to look up
+    /// vendor-tag metadata.
+    func onAccessoryFound(id: String, name: String, serviceUuid: String)
     /// Bytes pushed by the accessory via its Tx (notify) characteristic.
     /// `bytes` is a fully-reassembled message (BLE-level fragmentation is
     /// transparent to the caller).
@@ -87,8 +89,11 @@ final class BleOob: NSObject {
   private var central: CBCentralManager?
   private var peripheral: CBPeripheralManager?
 
-  private var localName: String = "ios"
-  private var started = false
+  /// Read by the host so callers can re-issue `start(...)` while keeping
+  /// the existing localName.
+  private(set) var localName: String = "ios"
+  /// Read by the host to know whether scanning/advertising is active.
+  private(set) var started = false
   // Flags set by `start()` and consumed when each manager reaches
   // `.poweredOn`. The two managers come up asynchronously so we cannot
   // begin scanning/advertising synchronously from `start`.
@@ -193,6 +198,17 @@ final class BleOob: NSObject {
       peripheral = CBPeripheralManager(delegate: self, queue: .main)
     } else {
       attemptAdvertiseIfReady()
+    }
+  }
+
+  /// Update the configured accessory profile list. If a scan is currently
+  /// active, restart it with the new UUID filter; otherwise the new list is
+  /// picked up on the next `start(...)` call.
+  func updateAccessoryProfiles(_ profiles: [AccessoryProfile]) {
+    self.accessoryProfiles = profiles
+    if let c = central, c.state == .poweredOn, c.isScanning {
+      c.stopScan()
+      attemptScanIfReady()
     }
   }
 
@@ -498,8 +514,12 @@ extension BleOob: CBCentralManagerDelegate {
       switch kind {
       case .peer:
         callback?.onDeviceFound(id: id, name: name)
-      case .accessory:
-        callback?.onAccessoryFound(id: id, name: name)
+      case .accessory(let profile):
+        callback?.onAccessoryFound(
+          id: id,
+          name: name,
+          serviceUuid: profile.serviceUuid.uuidString.uppercased()
+        )
       }
     }
   }

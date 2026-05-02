@@ -29,6 +29,8 @@ void main() {
       'getLocalToken',
       'startRanging',
       'stopRanging',
+      'registerAccessoryProfile',
+      'unregisterAccessoryProfile',
     ]) {
       binaryMessenger.setMockMessageHandler(_hostChan(m), null);
     }
@@ -93,6 +95,78 @@ void main() {
       final out = await FlutterUwb.instance
           .exchangeTokens('peer-id', Uint8List.fromList([1, 2, 3]));
       expect(out, equals(canned));
+    });
+
+    test('registerAccessoryProfile forwards the profile and returns ok=true',
+        () async {
+      const codec = pigeon.UwbHostApi.pigeonChannelCodec;
+      pigeon.AccessoryProfile? captured;
+      binaryMessenger.setMockMessageHandler(_hostChan('registerAccessoryProfile'),
+          (ByteData? message) async {
+        final args = codec.decodeMessage(message)! as List<Object?>;
+        captured = args[0] as pigeon.AccessoryProfile;
+        return codec.encodeMessage(<Object?>[
+          pigeon.VoidResult(ok: true),
+        ]);
+      });
+
+      final result = await FlutterUwb.instance.registerAccessoryProfile(
+        serviceUuid: '48FE7E40-CB7C-470E-89ED-5B85A13E67EE',
+        rxUuid: '6E63FF01-87A8-490B-AF2F-FC1D4B67F77A',
+        txUuid: '6E63FF02-87A8-490B-AF2F-FC1D4B67F77A',
+        vendorTag: 'qorvo',
+      );
+
+      expect(result.ok, isTrue);
+      expect(captured?.serviceUuid, '48FE7E40-CB7C-470E-89ED-5B85A13E67EE');
+      expect(captured?.rxUuid, '6E63FF01-87A8-490B-AF2F-FC1D4B67F77A');
+      expect(captured?.txUuid, '6E63FF02-87A8-490B-AF2F-FC1D4B67F77A');
+      expect(captured?.vendorTag, 'qorvo');
+    });
+
+    test('unregisterAccessoryProfile forwards the serviceUuid', () async {
+      const codec = pigeon.UwbHostApi.pigeonChannelCodec;
+      String? capturedServiceUuid;
+      binaryMessenger.setMockMessageHandler(_hostChan('unregisterAccessoryProfile'),
+          (ByteData? message) async {
+        final args = codec.decodeMessage(message)! as List<Object?>;
+        capturedServiceUuid = args[0] as String;
+        return codec.encodeMessage(<Object?>[
+          pigeon.VoidResult(ok: true),
+        ]);
+      });
+
+      final result = await FlutterUwb.instance
+          .unregisterAccessoryProfile('48FE7E40-CB7C-470E-89ED-5B85A13E67EE');
+
+      expect(result.ok, isTrue);
+      expect(capturedServiceUuid, '48FE7E40-CB7C-470E-89ED-5B85A13E67EE');
+    });
+
+    test('vendorTag flowing through to UwbDevice.platform "accessory:<tag>"',
+        () async {
+      // The platform-string convention is the contract between native and
+      // Dart for vendor adapters; this test pins it.
+      const codec = pigeon.UwbFlutterApi.pigeonChannelCodec;
+      final received = <UwbDevice>[];
+      final sub = FlutterUwb.instance.deviceFound.listen(received.add);
+
+      final device = UwbDevice(
+        id: 'acc-1',
+        name: 'Tag',
+        platform: 'accessory:qorvo',
+      );
+      final msg = codec.encodeMessage(<Object?>[device]);
+      await binaryMessenger.handlePlatformMessage(
+        _flutterChan('onDeviceFound'),
+        msg,
+        (_) {},
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(received, hasLength(1));
+      expect(received.first.platform, 'accessory:qorvo');
+      await sub.cancel();
     });
 
     test('getLocalToken returns bytes for both roles', () async {

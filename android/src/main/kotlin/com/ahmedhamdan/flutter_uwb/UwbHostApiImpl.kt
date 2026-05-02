@@ -120,6 +120,27 @@ class UwbHostApiImpl(
         VoidResult(ok = false, error = t.message ?: "declineRequest error")
     }
 
+    // ---------------- Accessory profile registration ----------------
+    // Stash registrations so the Phase D Android-side controlee strategy
+    // can consume them. The Android BLE-OOB plumbing for accessory mode
+    // is hardware-gated; for now this is store-only.
+    private val registeredProfiles = LinkedHashMap<String, AccessoryProfile>()
+
+    override fun registerAccessoryProfile(profile: AccessoryProfile): VoidResult {
+        val svc = profile.serviceUuid
+            ?: return VoidResult(ok = false, error = "serviceUuid required")
+        if (profile.rxUuid == null || profile.txUuid == null) {
+            return VoidResult(ok = false, error = "rxUuid and txUuid required")
+        }
+        registeredProfiles[svc.uppercase()] = profile
+        return VoidResult(ok = true)
+    }
+
+    override fun unregisterAccessoryProfile(serviceUuid: String): VoidResult {
+        registeredProfiles.remove(serviceUuid.uppercase())
+        return VoidResult(ok = true)
+    }
+
     override fun exchangeTokens(
         deviceId: String,
         myToken: TokenPayload,

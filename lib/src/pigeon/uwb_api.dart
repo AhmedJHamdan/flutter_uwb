@@ -17,6 +17,23 @@ class UwbDevice {
   String? platform;
 }
 
+/// BLE service + characteristic triplet describing an accessory.
+///
+/// `serviceUuid` is the GATT service the iPhone/Android scans for and
+/// connects to. `rxUuid` is the characteristic the host writes to (the
+/// accessory's "Rx"); `txUuid` is the one the accessory pushes via
+/// notifications (its "Tx").
+///
+/// `vendorTag` is appended to `UwbDevice.platform` as `accessory:<tag>` so
+/// the Dart side can filter; pass `null` for the built-in Apple-FiRa
+/// handling (`UwbDevice.platform == "accessory"`).
+class AccessoryProfile {
+  String? serviceUuid;
+  String? rxUuid;
+  String? txUuid;
+  String? vendorTag;
+}
+
 class TokenPayload {
   Uint8List? bytes;
 }
@@ -48,6 +65,13 @@ abstract class UwbHostApi {
   List<UwbDevice> getDiscovered();
   VoidResult acceptRequest(String deviceId, TokenPayload myToken);
   VoidResult declineRequest(String deviceId);
+
+  // Accessory profile registration. The host scans for every registered
+  // service UUID in addition to the built-in flutter_uwb peer service.
+  // Profiles are kept across stop/start cycles; call
+  // `unregisterAccessoryProfile` to remove one.
+  VoidResult registerAccessoryProfile(AccessoryProfile profile);
+  VoidResult unregisterAccessoryProfile(String serviceUuid);
 
   // Token exchange does BLE I/O and must be async.
   @async

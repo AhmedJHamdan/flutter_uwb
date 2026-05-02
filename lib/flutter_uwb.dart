@@ -4,7 +4,13 @@ import 'dart:typed_data';
 import 'src/pigeon/uwb.g.dart';
 
 export 'src/pigeon/uwb.g.dart'
-    show RangingSample, TokenPayload, UwbDevice, UwbRole, VoidResult;
+    show
+        AccessoryProfile,
+        RangingSample,
+        TokenPayload,
+        UwbDevice,
+        UwbRole,
+        VoidResult;
 
 /// Public Dart facade for the flutter_uwb plugin.
 ///
@@ -64,6 +70,32 @@ class FlutterUwb {
 
   Future<VoidResult> declineRequest(String deviceId) =>
       _api.declineRequest(deviceId);
+
+  /// Register an accessory profile so the plugin scans for its service
+  /// UUID alongside the built-in flutter_uwb peer service.
+  ///
+  /// Profiles persist across `stopDiscovery` / `startDiscovery` cycles.
+  /// `vendorTag` (when non-null) flows through to
+  /// `UwbDevice.platform = "accessory:&lt;vendorTag&gt;"`; pass `null` for
+  /// built-in Apple-FiRa handling (`UwbDevice.platform == "accessory"`).
+  Future<VoidResult> registerAccessoryProfile({
+    required String serviceUuid,
+    required String rxUuid,
+    required String txUuid,
+    String? vendorTag,
+  }) =>
+      _api.registerAccessoryProfile(
+        AccessoryProfile(
+          serviceUuid: serviceUuid,
+          rxUuid: rxUuid,
+          txUuid: txUuid,
+          vendorTag: vendorTag,
+        ),
+      );
+
+  /// Remove a previously-registered accessory profile.
+  Future<VoidResult> unregisterAccessoryProfile(String serviceUuid) =>
+      _api.unregisterAccessoryProfile(serviceUuid);
 
   Future<Uint8List> exchangeTokens(String deviceId, Uint8List myToken) async {
     final out = await _api.exchangeTokens(
@@ -140,6 +172,20 @@ Future<VoidResult> acceptRequest(String deviceId, Uint8List myToken) =>
     _instance.acceptRequest(deviceId, myToken);
 Future<VoidResult> declineRequest(String deviceId) =>
     _instance.declineRequest(deviceId);
+Future<VoidResult> registerAccessoryProfile({
+  required String serviceUuid,
+  required String rxUuid,
+  required String txUuid,
+  String? vendorTag,
+}) =>
+    _instance.registerAccessoryProfile(
+      serviceUuid: serviceUuid,
+      rxUuid: rxUuid,
+      txUuid: txUuid,
+      vendorTag: vendorTag,
+    );
+Future<VoidResult> unregisterAccessoryProfile(String serviceUuid) =>
+    _instance.unregisterAccessoryProfile(serviceUuid);
 Future<Uint8List> exchangeTokens(String deviceId, Uint8List myToken) =>
     _instance.exchangeTokens(deviceId, myToken);
 Future<bool> isUwbAvailable() => _instance.isUwbAvailable();

@@ -83,6 +83,47 @@ data class UwbDevice (
   }
 }
 
+/**
+ * BLE service + characteristic triplet describing an accessory.
+ *
+ * `serviceUuid` is the GATT service the iPhone/Android scans for and
+ * connects to. `rxUuid` is the characteristic the host writes to (the
+ * accessory's "Rx"); `txUuid` is the one the accessory pushes via
+ * notifications (its "Tx").
+ *
+ * `vendorTag` is appended to `UwbDevice.platform` as `accessory:<tag>` so
+ * the Dart side can filter; pass `null` for the built-in Apple-FiRa
+ * handling (`UwbDevice.platform == "accessory"`).
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class AccessoryProfile (
+  val serviceUuid: String? = null,
+  val rxUuid: String? = null,
+  val txUuid: String? = null,
+  val vendorTag: String? = null
+
+) {
+  companion object {
+    @Suppress("UNCHECKED_CAST")
+    fun fromList(list: List<Any?>): AccessoryProfile {
+      val serviceUuid = list[0] as String?
+      val rxUuid = list[1] as String?
+      val txUuid = list[2] as String?
+      val vendorTag = list[3] as String?
+      return AccessoryProfile(serviceUuid, rxUuid, txUuid, vendorTag)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf<Any?>(
+      serviceUuid,
+      rxUuid,
+      txUuid,
+      vendorTag,
+    )
+  }
+}
+
 /** Generated class from Pigeon that represents data sent in messages. */
 data class TokenPayload (
   val bytes: ByteArray? = null
@@ -161,15 +202,20 @@ private object UwbHostApiCodec : StandardMessageCodec() {
     return when (type) {
       128.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          TokenPayload.fromList(it)
+          AccessoryProfile.fromList(it)
         }
       }
       129.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          UwbDevice.fromList(it)
+          TokenPayload.fromList(it)
         }
       }
       130.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          UwbDevice.fromList(it)
+        }
+      }
+      131.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           VoidResult.fromList(it)
         }
@@ -179,16 +225,20 @@ private object UwbHostApiCodec : StandardMessageCodec() {
   }
   override fun writeValue(stream: ByteArrayOutputStream, value: Any?)   {
     when (value) {
-      is TokenPayload -> {
+      is AccessoryProfile -> {
         stream.write(128)
         writeValue(stream, value.toList())
       }
-      is UwbDevice -> {
+      is TokenPayload -> {
         stream.write(129)
         writeValue(stream, value.toList())
       }
-      is VoidResult -> {
+      is UwbDevice -> {
         stream.write(130)
+        writeValue(stream, value.toList())
+      }
+      is VoidResult -> {
+        stream.write(131)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -203,6 +253,8 @@ interface UwbHostApi {
   fun getDiscovered(): List<UwbDevice>
   fun acceptRequest(deviceId: String, myToken: TokenPayload): VoidResult
   fun declineRequest(deviceId: String): VoidResult
+  fun registerAccessoryProfile(profile: AccessoryProfile): VoidResult
+  fun unregisterAccessoryProfile(serviceUuid: String): VoidResult
   fun exchangeTokens(deviceId: String, myToken: TokenPayload, callback: (Result<TokenPayload>) -> Unit)
   fun isUwbAvailable(callback: (Result<Boolean>) -> Unit)
   /**
@@ -305,6 +357,42 @@ interface UwbHostApi {
             var wrapped: List<Any?>
             try {
               wrapped = listOf<Any?>(api.declineRequest(deviceIdArg))
+            } catch (exception: Throwable) {
+              wrapped = wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.registerAccessoryProfile", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val profileArg = args[0] as AccessoryProfile
+            var wrapped: List<Any?>
+            try {
+              wrapped = listOf<Any?>(api.registerAccessoryProfile(profileArg))
+            } catch (exception: Throwable) {
+              wrapped = wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.unregisterAccessoryProfile", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val serviceUuidArg = args[0] as String
+            var wrapped: List<Any?>
+            try {
+              wrapped = listOf<Any?>(api.unregisterAccessoryProfile(serviceUuidArg))
             } catch (exception: Throwable) {
               wrapped = wrapError(exception)
             }

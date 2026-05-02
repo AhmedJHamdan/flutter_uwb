@@ -54,23 +54,18 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
 
   // MARK: - Accessory profiles
 
-  /// Placeholder Apple-FiRa accessory profile.
-  ///
-  /// Real accessories use vendor-specific service + characteristic UUIDs
-  /// (Apple's WWDC 2022 sample uses one set; Qorvo, NXP, etc. ship others).
-  /// The placeholder values below are sentinels — they intentionally do not
-  /// match any real device, so accessory mode is effectively dormant until
-  /// Phase E surfaces `registerAccessoryAdapter(serviceUuid:adapter:)` to
-  /// Dart and the host app registers actual profiles.
-  ///
-  /// - TODO(phase-e): replace with caller-supplied profiles.
-  private static let placeholderAccessoryProfiles: [BleOob.AccessoryProfile] = [
-    BleOob.AccessoryProfile(
-      serviceUuid: CBUUID(string: "00000001-0000-1000-8000-00805F9B34FB"),
-      rxUuid: CBUUID(string: "00000002-0000-1000-8000-00805F9B34FB"),
-      txUuid: CBUUID(string: "00000003-0000-1000-8000-00805F9B34FB")
-    ),
-  ]
+  /// Accessory profiles registered from Dart, keyed by service UUID
+  /// (uppercase, hyphenated). `vendorTag` (when present) becomes the
+  /// suffix of `UwbDevice.platform = "accessory:<tag>"`.
+  private struct RegisteredProfile {
+    let bleProfile: BleOob.AccessoryProfile
+    let vendorTag: String?
+  }
+  private var registeredProfiles: [String: RegisteredProfile] = [:]
+
+  private func bleAccessoryProfiles() -> [BleOob.AccessoryProfile] {
+    return registeredProfiles.values.map(\.bleProfile)
+  }
 
   // MARK: - Discovery / OOB
 
@@ -80,8 +75,37 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     failPendingExchanges(with: PluginError.cancelled)
     ble.start(
       localName: localName,
-      accessoryProfiles: Self.placeholderAccessoryProfiles
+      accessoryProfiles: bleAccessoryProfiles()
     )
+    return VoidResult(ok: true)
+  }
+
+  func registerAccessoryProfile(profile: AccessoryProfile) throws -> VoidResult {
+    guard let svc = profile.serviceUuid,
+          let rx = profile.rxUuid,
+          let tx = profile.txUuid else {
+      return VoidResult(
+        ok: false,
+        error: "AccessoryProfile requires serviceUuid, rxUuid, and txUuid"
+      )
+    }
+    let key = svc.uppercased()
+    let bleProfile = BleOob.AccessoryProfile(
+      serviceUuid: CBUUID(string: svc),
+      rxUuid: CBUUID(string: rx),
+      txUuid: CBUUID(string: tx)
+    )
+    registeredProfiles[key] = RegisteredProfile(
+      bleProfile: bleProfile,
+      vendorTag: profile.vendorTag
+    )
+    ble.updateAccessoryProfiles(bleAccessoryProfiles())
+    return VoidResult(ok: true)
+  }
+
+  func unregisterAccessoryProfile(serviceUuid: String) throws -> VoidResult {
+    registeredProfiles.removeValue(forKey: serviceUuid.uppercased())
+    ble.updateAccessoryProfiles(bleAccessoryProfiles())
     return VoidResult(ok: true)
   }
 
@@ -323,8 +347,10 @@ extension UwbHostApiImpl: BleOob.Callback {
 
   // Accessory mode -----------------------------------------------------
 
-  func onAccessoryFound(id: String, name: String) {
-    let device = UwbDevice(id: id, name: name, platform: "accessory")
+  func onAccessoryFound(id: String, name: String, serviceUuid: String) {
+    let vendorTag = registeredProfiles[serviceUuid.uppercased()]?.vendorTag
+    let platform = vendorTag.map { "accessory:\($0)" } ?? "accessory"
+    let device = UwbDevice(id: id, name: name, platform: platform)
     let isNew = discovered[id] == nil
     discovered[id] = device
     if isNew {

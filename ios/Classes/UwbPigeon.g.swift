@@ -74,6 +74,47 @@ struct UwbDevice {
   }
 }
 
+/// BLE service + characteristic triplet describing an accessory.
+///
+/// `serviceUuid` is the GATT service the iPhone/Android scans for and
+/// connects to. `rxUuid` is the characteristic the host writes to (the
+/// accessory's "Rx"); `txUuid` is the one the accessory pushes via
+/// notifications (its "Tx").
+///
+/// `vendorTag` is appended to `UwbDevice.platform` as `accessory:<tag>` so
+/// the Dart side can filter; pass `null` for the built-in Apple-FiRa
+/// handling (`UwbDevice.platform == "accessory"`).
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct AccessoryProfile {
+  var serviceUuid: String? = nil
+  var rxUuid: String? = nil
+  var txUuid: String? = nil
+  var vendorTag: String? = nil
+
+  static func fromList(_ list: [Any?]) -> AccessoryProfile? {
+    let serviceUuid: String? = nilOrValue(list[0])
+    let rxUuid: String? = nilOrValue(list[1])
+    let txUuid: String? = nilOrValue(list[2])
+    let vendorTag: String? = nilOrValue(list[3])
+
+    return AccessoryProfile(
+      serviceUuid: serviceUuid,
+      rxUuid: rxUuid,
+      txUuid: txUuid,
+      vendorTag: vendorTag
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      serviceUuid,
+      rxUuid,
+      txUuid,
+      vendorTag,
+    ]
+  }
+}
+
 /// Generated class from Pigeon that represents data sent in messages.
 struct TokenPayload {
   var bytes: FlutterStandardTypedData? = nil
@@ -152,10 +193,12 @@ private class UwbHostApiCodecReader: FlutterStandardReader {
   override func readValue(ofType type: UInt8) -> Any? {
     switch type {
       case 128:
-        return TokenPayload.fromList(self.readValue() as! [Any?])
+        return AccessoryProfile.fromList(self.readValue() as! [Any?])
       case 129:
-        return UwbDevice.fromList(self.readValue() as! [Any?])
+        return TokenPayload.fromList(self.readValue() as! [Any?])
       case 130:
+        return UwbDevice.fromList(self.readValue() as! [Any?])
+      case 131:
         return VoidResult.fromList(self.readValue() as! [Any?])
       default:
         return super.readValue(ofType: type)
@@ -165,14 +208,17 @@ private class UwbHostApiCodecReader: FlutterStandardReader {
 
 private class UwbHostApiCodecWriter: FlutterStandardWriter {
   override func writeValue(_ value: Any) {
-    if let value = value as? TokenPayload {
+    if let value = value as? AccessoryProfile {
       super.writeByte(128)
       super.writeValue(value.toList())
-    } else if let value = value as? UwbDevice {
+    } else if let value = value as? TokenPayload {
       super.writeByte(129)
       super.writeValue(value.toList())
-    } else if let value = value as? VoidResult {
+    } else if let value = value as? UwbDevice {
       super.writeByte(130)
+      super.writeValue(value.toList())
+    } else if let value = value as? VoidResult {
+      super.writeByte(131)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -201,6 +247,8 @@ protocol UwbHostApi {
   func getDiscovered() throws -> [UwbDevice]
   func acceptRequest(deviceId: String, myToken: TokenPayload) throws -> VoidResult
   func declineRequest(deviceId: String) throws -> VoidResult
+  func registerAccessoryProfile(profile: AccessoryProfile) throws -> VoidResult
+  func unregisterAccessoryProfile(serviceUuid: String) throws -> VoidResult
   func exchangeTokens(deviceId: String, myToken: TokenPayload, completion: @escaping (Result<TokenPayload, Error>) -> Void)
   func isUwbAvailable(completion: @escaping (Result<Bool, Error>) -> Void)
   /// Returns the platform-native OOB token to share with the peer.
@@ -293,6 +341,36 @@ class UwbHostApiSetup {
       }
     } else {
       declineRequestChannel.setMessageHandler(nil)
+    }
+    let registerAccessoryProfileChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.flutter_uwb.UwbHostApi.registerAccessoryProfile", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      registerAccessoryProfileChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let profileArg = args[0] as! AccessoryProfile
+        do {
+          let result = try api.registerAccessoryProfile(profile: profileArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      registerAccessoryProfileChannel.setMessageHandler(nil)
+    }
+    let unregisterAccessoryProfileChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.flutter_uwb.UwbHostApi.unregisterAccessoryProfile", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      unregisterAccessoryProfileChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let serviceUuidArg = args[0] as! String
+        do {
+          let result = try api.unregisterAccessoryProfile(serviceUuid: serviceUuidArg)
+          reply(wrapResult(result))
+        } catch {
+          reply(wrapError(error))
+        }
+      }
+    } else {
+      unregisterAccessoryProfileChannel.setMessageHandler(nil)
     }
     let exchangeTokensChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.flutter_uwb.UwbHostApi.exchangeTokens", binaryMessenger: binaryMessenger, codec: codec)
     if let api = api {
