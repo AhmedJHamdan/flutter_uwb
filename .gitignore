@@ -48,3 +48,15 @@ example/android/.gradle/
 example/android/build/
 example/android/app/build/
 example/android/local.properties
+
+# Example app lock file (may contain private mirror URLs)
+example/pubspec.lock
+
+# Internal agent/planning docs
+docs/agents/
+
+# AI assistant config files
+CLAUDE.md
+.claude/
+AGENTS.md
+copilot-instructions.md

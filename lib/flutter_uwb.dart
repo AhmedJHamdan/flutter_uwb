@@ -55,19 +55,28 @@ class FlutterUwb {
   Stream<RangingErrorEvent> get rangingErrors => _errors.stream;
 
   // -------- Discovery / OOB --------
+
+  /// Start BLE OOB discovery, advertising [localName] to nearby peers.
+  ///
+  /// Returns an error result if BLE is unavailable or already discovering.
   Future<VoidResult> startDiscovery(String localName) =>
       _api.startDiscovery(localName);
 
+  /// Stop BLE OOB discovery and release the underlying scan/advertise handles.
   Future<VoidResult> stopDiscovery() => _api.stopDiscovery();
 
+  /// Snapshot of all peers discovered since the last [startDiscovery] call.
   Future<List<UwbDevice>> getDiscovered() async {
     final list = await _api.getDiscovered();
     return list.whereType<UwbDevice>().toList();
   }
 
+  /// Accept a ranging request from [deviceId], supplying the local UWB token
+  /// [myToken] so the peer can start an NISession / Jetpack UWB session.
   Future<VoidResult> acceptRequest(String deviceId, Uint8List myToken) =>
       _api.acceptRequest(deviceId, TokenPayload(bytes: myToken));
 
+  /// Decline a ranging request from [deviceId].
   Future<VoidResult> declineRequest(String deviceId) =>
       _api.declineRequest(deviceId);
 
@@ -97,6 +106,10 @@ class FlutterUwb {
   Future<VoidResult> unregisterAccessoryProfile(String serviceUuid) =>
       _api.unregisterAccessoryProfile(serviceUuid);
 
+  /// Exchange OOB tokens with [deviceId] in a single BLE round-trip.
+  ///
+  /// Sends [myToken] to the peer and returns the peer's token. Both sides must
+  /// call this before starting a UWB session.
   Future<Uint8List> exchangeTokens(String deviceId, Uint8List myToken) async {
     final out = await _api.exchangeTokens(
       deviceId,
@@ -106,6 +119,8 @@ class FlutterUwb {
   }
 
   // -------- UWB --------
+
+  /// Returns `true` if the device has a UWB radio and the OS grants access.
   Future<bool> isUwbAvailable() => _api.isUwbAvailable();
 
   /// Returns the local platform-specific OOB token.
@@ -118,15 +133,25 @@ class FlutterUwb {
     return t.bytes ?? Uint8List(0);
   }
 
+  /// Begin a UWB ranging session with [deviceId].
+  ///
+  /// Both sides must have completed token exchange first. Samples are emitted
+  /// on [rangingSamples]; errors on [rangingErrors].
   Future<VoidResult> startRanging(String deviceId) =>
       _api.startRanging(deviceId);
 
+  /// Stop the active UWB ranging session and release platform resources.
   Future<VoidResult> stopRanging() => _api.stopRanging();
 }
 
+/// Carries a platform error raised inside an active ranging session.
 class RangingErrorEvent {
   RangingErrorEvent(this.deviceId, this.message);
+
+  /// The peer whose session produced the error.
   final String deviceId;
+
+  /// Human-readable description of the error.
   final String message;
 }
 
@@ -189,8 +214,7 @@ Future<VoidResult> unregisterAccessoryProfile(String serviceUuid) =>
 Future<Uint8List> exchangeTokens(String deviceId, Uint8List myToken) =>
     _instance.exchangeTokens(deviceId, myToken);
 Future<bool> isUwbAvailable() => _instance.isUwbAvailable();
-Future<Uint8List> getLocalToken(UwbRole role) =>
-    _instance.getLocalToken(role);
+Future<Uint8List> getLocalToken(UwbRole role) => _instance.getLocalToken(role);
 Future<VoidResult> startRanging(String deviceId) =>
     _instance.startRanging(deviceId);
 Future<VoidResult> stopRanging() => _instance.stopRanging();

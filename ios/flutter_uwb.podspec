@@ -12,7 +12,7 @@ a BLE GATT custom service for out-of-band discovery and token exchange. UWB
 ranging itself runs on Jetpack UWB on Android and NearbyInteraction
 (NISession) on iOS.
                        DESC
-  s.homepage         = 'https://github.com/ahmedhamdan/flutter_uwb'
+  s.homepage         = 'https://github.com/AhmedJHamdan/flutter_uwb'
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Ahmed Hamdan' => 'contact@ahmedhamdan.com' }
   s.source           = { :path => '.' }
