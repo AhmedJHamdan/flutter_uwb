@@ -1,0 +1,343 @@
+import CoreBluetooth
+import Flutter
+import Foundation
+import NearbyInteraction
+
+// Pigeon 14.0.1's Swift FlutterApi codegen uses `Result<Void, FlutterError>`.
+// `FlutterError` from the Flutter framework is an NSObject and is not
+// automatically bridged to Swift's `Error` protocol — make it conform here
+// so the generated code compiles.
+extension FlutterError: Error {}
+
+/// Implements `UwbHostApi` on iOS.
+///
+/// **Discovery / OOB transport** uses BLE GATT via `BleOob.swift` — the same
+/// custom service + characteristic UUIDs as the Android `BleOob.kt`. Each
+/// peer found by `CBCentralManager` becomes a `UwbDevice` keyed by the
+/// peripheral's `identifier.uuidString`; peripheral-side requests are keyed
+/// by the connected central's `identifier.uuidString`.
+///
+/// **UWB ranging** is dispatched by `UwbDevice.platform`:
+/// - `"ios"` / `"android"` → `IosPeerStrategy` (NINearbyPeerConfiguration).
+/// - `"accessory"`         → `IosAccessoryStrategy` (NINearbyAccessoryConfiguration
+///   over Apple's FiRa accessory BLE protocol).
+@available(iOS 14.0, *)
+final class UwbHostApiImpl: NSObject, UwbHostApi {
+  private let flutterApi: UwbFlutterApi
+
+  /// BLE OOB transport. One instance for the lifetime of the plugin.
+  private let ble = BleOob()
+
+  /// Devices observed via BLE OOB, keyed by BLE id.
+  private var discovered: [String: UwbDevice] = [:]
+
+  /// Peer tokens, keyed by BLE id. Populated by the peripheral path on
+  /// incoming-write and by the central path when an exchange settles.
+  private var peerTokens: [String: Data] = [:]
+
+  /// In-flight `exchangeTokens` completions, keyed by BLE id.
+  private var pendingExchanges: [String: (Result<TokenPayload, Error>) -> Void] = [:]
+
+  /// NI session that owns the local `NIDiscoveryToken` returned from
+  /// `getLocalToken`. Reused on subsequent calls. Distinct from any session
+  /// owned by an active ranging strategy.
+  private var localTokenSession: NISession?
+
+  /// Active ranging strategy, if any. One at a time.
+  private var activeStrategy: RangingStrategy?
+
+  init(messenger: FlutterBinaryMessenger) {
+    self.flutterApi = UwbFlutterApi(binaryMessenger: messenger)
+    super.init()
+    ble.callback = self
+  }
+
+  // MARK: - Accessory profiles
+
+  /// Placeholder Apple-FiRa accessory profile.
+  ///
+  /// Real accessories use vendor-specific service + characteristic UUIDs
+  /// (Apple's WWDC 2022 sample uses one set; Qorvo, NXP, etc. ship others).
+  /// The placeholder values below are sentinels — they intentionally do not
+  /// match any real device, so accessory mode is effectively dormant until
+  /// Phase E surfaces `registerAccessoryAdapter(serviceUuid:adapter:)` to
+  /// Dart and the host app registers actual profiles.
+  ///
+  /// - TODO(phase-e): replace with caller-supplied profiles.
+  private static let placeholderAccessoryProfiles: [BleOob.AccessoryProfile] = [
+    BleOob.AccessoryProfile(
+      serviceUuid: CBUUID(string: "00000001-0000-1000-8000-00805F9B34FB"),
+      rxUuid: CBUUID(string: "00000002-0000-1000-8000-00805F9B34FB"),
+      txUuid: CBUUID(string: "00000003-0000-1000-8000-00805F9B34FB")
+    ),
+  ]
+
+  // MARK: - Discovery / OOB
+
+  func startDiscovery(localName: String) throws -> VoidResult {
+    discovered.removeAll()
+    peerTokens.removeAll()
+    failPendingExchanges(with: PluginError.cancelled)
+    ble.start(
+      localName: localName,
+      accessoryProfiles: Self.placeholderAccessoryProfiles
+    )
+    return VoidResult(ok: true)
+  }
+
+  func stopDiscovery() throws -> VoidResult {
+    ble.stop()
+    discovered.removeAll()
+    peerTokens.removeAll()
+    failPendingExchanges(with: PluginError.cancelled)
+    return VoidResult(ok: true)
+  }
+
+  func getDiscovered() throws -> [UwbDevice] {
+    return Array(discovered.values)
+  }
+
+  func acceptRequest(deviceId: String, myToken: TokenPayload) throws -> VoidResult {
+    let token = myToken.bytes?.data ?? Data()
+    ble.accept(deviceId: deviceId, myToken: token)
+    return VoidResult(ok: true)
+  }
+
+  func declineRequest(deviceId: String) throws -> VoidResult {
+    ble.decline(deviceId: deviceId)
+    return VoidResult(ok: true)
+  }
+
+  func exchangeTokens(
+    deviceId: String,
+    myToken: TokenPayload,
+    completion: @escaping (Result<TokenPayload, Error>) -> Void
+  ) {
+    let token = myToken.bytes?.data ?? Data()
+    pendingExchanges[deviceId] = completion
+    ble.exchange(
+      deviceId: deviceId,
+      myToken: token,
+      onPeer: { [weak self] bytes in
+        guard let self = self else { return }
+        self.peerTokens[deviceId] = bytes
+        if let pending = self.pendingExchanges.removeValue(forKey: deviceId) {
+          pending(.success(TokenPayload(
+            bytes: FlutterStandardTypedData(bytes: bytes)
+          )))
+        }
+      },
+      onErr: { [weak self] message in
+        guard let self = self else { return }
+        if let pending = self.pendingExchanges.removeValue(forKey: deviceId) {
+          pending(.failure(PluginError.transport(message)))
+        }
+      }
+    )
+  }
+
+  // MARK: - UWB
+
+  func isUwbAvailable(completion: @escaping (Result<Bool, Error>) -> Void) {
+    #if targetEnvironment(simulator)
+    // The iOS simulator stubs `NISession.isSupported` as `true` but cannot
+    // actually run UWB ranging. Be honest with callers.
+    completion(.success(false))
+    return
+    #else
+    let supported: Bool
+    if #available(iOS 16.0, *) {
+      supported = NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
+    } else {
+      supported = NISession.isSupported
+    }
+    completion(.success(supported))
+    #endif
+  }
+
+  func getLocalToken(role: UwbRole, completion: @escaping (Result<TokenPayload, Error>) -> Void) {
+    // On iOS the role does not affect the token: NI sessions are symmetric
+    // and `NIDiscoveryToken` is opaque. We return the discovery token of a
+    // session held purely for this purpose.
+    let session = localTokenSession ?? NISession()
+    localTokenSession = session
+    guard let token = session.discoveryToken else {
+      completion(.failure(PluginError.tokenUnavailable))
+      return
+    }
+    do {
+      let bytes = try NSKeyedArchiver.archivedData(
+        withRootObject: token,
+        requiringSecureCoding: true
+      )
+      completion(.success(TokenPayload(bytes: FlutterStandardTypedData(bytes: bytes))))
+    } catch {
+      completion(.failure(error))
+    }
+  }
+
+  func startRanging(deviceId: String, completion: @escaping (Result<VoidResult, Error>) -> Void) {
+    activeStrategy?.stop()
+    activeStrategy = nil
+
+    guard let device = discovered[deviceId] else {
+      completion(.success(VoidResult(
+        ok: false,
+        error: "Unknown deviceId \(deviceId). Run startDiscovery first."
+      )))
+      return
+    }
+
+    do {
+      let strategy = try makeStrategy(for: device)
+      activeStrategy = strategy
+      try strategy.start()
+      completion(.success(VoidResult(ok: true)))
+    } catch let pluginError as PluginError {
+      activeStrategy = nil
+      completion(.success(VoidResult(
+        ok: false,
+        error: pluginError.errorDescription ?? "startRanging failed"
+      )))
+    } catch {
+      activeStrategy = nil
+      completion(.failure(error))
+    }
+  }
+
+  func stopRanging(completion: @escaping (Result<VoidResult, Error>) -> Void) {
+    activeStrategy?.stop()
+    activeStrategy = nil
+    completion(.success(VoidResult(ok: true)))
+  }
+
+  // MARK: - Helpers
+
+  private func makeStrategy(for device: UwbDevice) throws -> RangingStrategy {
+    switch device.platform ?? "ios" {
+    case "ios", "android":
+      guard let bytes = peerTokens[device.id ?? ""] else {
+        throw PluginError.transport(
+          "No peer token for \(device.id ?? "?"). "
+            + "Run exchangeTokens (or acceptRequest) first."
+        )
+      }
+      return IosPeerStrategy(
+        deviceId: device.id ?? "",
+        peerTokenBytes: bytes,
+        flutterApi: flutterApi
+      )
+    case "accessory":
+      guard #available(iOS 15.0, *) else {
+        throw PluginError.transport(
+          "Accessory ranging requires iOS 15.0 or newer."
+        )
+      }
+      return IosAccessoryStrategy(
+        deviceId: device.id ?? "",
+        flutterApi: flutterApi,
+        ble: ble
+      )
+    default:
+      throw PluginError.transport(
+        "Unknown peer platform: \(device.platform ?? "<nil>")"
+      )
+    }
+  }
+
+  private func failPendingExchanges(with error: Error) {
+    for completion in pendingExchanges.values { completion(.failure(error)) }
+    pendingExchanges.removeAll()
+  }
+}
+
+// MARK: - PluginError
+
+enum PluginError: LocalizedError {
+  case cancelled
+  case notDiscovering
+  case tokenUnavailable
+  case transport(String)
+
+  var errorDescription: String? {
+    switch self {
+    case .cancelled:        return "Operation cancelled"
+    case .notDiscovering:   return "Discovery is not active"
+    case .tokenUnavailable: return "Local NIDiscoveryToken not available"
+    case .transport(let m): return m
+    }
+  }
+}
+
+// MARK: - BleOob.Callback
+
+@available(iOS 14.0, *)
+extension UwbHostApiImpl: BleOob.Callback {
+  func onDeviceFound(id: String, name: String) {
+    let device = UwbDevice(id: id, name: name, platform: "ios")
+    let isNew = discovered[id] == nil
+    discovered[id] = device
+    if isNew {
+      flutterApi.onDeviceFound(device: device) { _ in }
+    }
+  }
+
+  func onIncomingRequest(id: String, name: String, peerToken: Data) {
+    // Mirror the Android peripheral path: accept a write as both a
+    // discovery signal and a token-bearing event. The peer's token is
+    // already in `peerToken`; cache it so `startRanging` works once Dart
+    // calls `acceptRequest`.
+    let device = UwbDevice(id: id, name: name, platform: "ios")
+    let isNew = discovered[id] == nil
+    discovered[id] = device
+    peerTokens[id] = peerToken
+    if isNew {
+      flutterApi.onDeviceFound(device: device) { _ in }
+    }
+  }
+
+  func onConnected(id: String, name: String) {
+    // The actual data carriage already happened. No surfacing to Dart;
+    // `exchangeTokens` resolves via the `onPeer` callback, and
+    // `acceptRequest` returns a success synchronously.
+  }
+
+  func onDisconnected(id: String, name: String) {
+    if discovered.removeValue(forKey: id) != nil {
+      flutterApi.onDeviceLost(deviceId: id) { _ in }
+    }
+    peerTokens.removeValue(forKey: id)
+    if let pending = pendingExchanges.removeValue(forKey: id) {
+      pending(.failure(PluginError.cancelled))
+    }
+    if activeStrategy?.deviceId == id {
+      activeStrategy?.stop()
+      activeStrategy = nil
+    }
+  }
+
+  func onError(_ message: String) {
+    let id = activeStrategy?.deviceId ?? "ble"
+    flutterApi.onRangingError(deviceId: id, message: message) { _ in }
+  }
+
+  // Accessory mode -----------------------------------------------------
+
+  func onAccessoryFound(id: String, name: String) {
+    let device = UwbDevice(id: id, name: name, platform: "accessory")
+    let isNew = discovered[id] == nil
+    discovered[id] = device
+    if isNew {
+      flutterApi.onDeviceFound(device: device) { _ in }
+    }
+  }
+
+  func onAccessoryNotify(id: String, bytes: Data) {
+    guard #available(iOS 15.0, *) else { return }
+    guard let strategy = activeStrategy as? IosAccessoryStrategy,
+          strategy.deviceId == id else {
+      return
+    }
+    strategy.handleAccessoryNotify(bytes)
+  }
+}

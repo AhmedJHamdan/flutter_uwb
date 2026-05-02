@@ -1,0 +1,22 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.ahmedhamdan.flutter_uwb">
+
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
+    <uses-feature android:name="android.hardware.uwb"           android:required="false"/>
+
+    <!-- Pre-Android-12 BLE permissions -->
+    <uses-permission android:name="android.permission.BLUETOOTH"            android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"      android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30"/>
+
+    <!-- Android 12+ runtime BLE permissions -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"  tools:targetApi="s"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"    tools:targetApi="s"/>
+
+    <!-- Android 14+ UWB permission -->
+    <uses-permission android:name="android.permission.UWB_RANGING"          tools:targetApi="33"/>
+</manifest>
