@@ -21,10 +21,9 @@ ThemeData buildBrandTheme() {
       onPrimary: Brand.background,
       onSurface: Brand.text,
     ),
-    textTheme: GoogleFonts.interTextTheme(base.textTheme).apply(
-      bodyColor: Brand.text,
-      displayColor: Brand.text,
-    ),
+    textTheme: GoogleFonts.interTextTheme(
+      base.textTheme,
+    ).apply(bodyColor: Brand.text, displayColor: Brand.text),
     cardTheme: CardThemeData(
       color: const Color(0xFF13182F),
       elevation: 0,
@@ -43,22 +42,22 @@ ThemeData buildBrandTheme() {
 
 /// Eyebrow text style ("UWB · RANGING") — JetBrains Mono, tracked, uppercase.
 TextStyle eyebrowStyle() => GoogleFonts.jetBrainsMono(
-      color: Brand.primary,
-      fontSize: 11,
-      fontWeight: FontWeight.w600,
-      letterSpacing: 2.4,
-    );
+  color: Brand.primary,
+  fontSize: 11,
+  fontWeight: FontWeight.w600,
+  letterSpacing: 2.4,
+);
 
 /// Big readout numeric style.
 TextStyle readoutValueStyle() => GoogleFonts.jetBrainsMono(
-      color: Brand.text,
-      fontSize: 28,
-      fontWeight: FontWeight.w600,
-    );
+  color: Brand.text,
+  fontSize: 28,
+  fontWeight: FontWeight.w600,
+);
 
 TextStyle readoutLabelStyle() => GoogleFonts.inter(
-      color: Brand.muted,
-      fontSize: 11,
-      fontWeight: FontWeight.w500,
-      letterSpacing: 0.6,
-    );
+  color: Brand.muted,
+  fontSize: 11,
+  fontWeight: FontWeight.w500,
+  letterSpacing: 0.6,
+);

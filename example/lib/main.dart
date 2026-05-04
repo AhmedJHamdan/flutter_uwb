@@ -288,7 +288,9 @@ class _HomeState extends State<_Home> {
                   text: 'UWB hardware not available on this device',
                   color: Brand.muted,
                 ),
-              if (_uwbAvailable == true && _activeRangingId == null && !_scanning)
+              if (_uwbAvailable == true &&
+                  _activeRangingId == null &&
+                  !_scanning)
                 _StatusBanner(text: 'Tap Start Ranging to discover peers'),
               if (_scanning && _activeRangingId == null)
                 _StatusBanner(text: 'Scanning for peers…'),
@@ -324,8 +326,8 @@ class _HomeState extends State<_Home> {
                       onPressed: _scanning && _activeRangingId == null
                           ? _toggleScan
                           : (_activeRangingId != null
-                              ? _stopRanging
-                              : _toggleScan),
+                                ? _stopRanging
+                                : _toggleScan),
                       child: Text(
                         _activeRangingId != null
                             ? 'Stop Ranging'
@@ -337,12 +339,31 @@ class _HomeState extends State<_Home> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Brand.primary,
-                        side: const BorderSide(color: Brand.primary),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                      style: ButtonStyle(
+                        foregroundColor: WidgetStateProperty.resolveWith(
+                          (states) => states.contains(WidgetState.disabled)
+                              ? Brand.primary.withValues(alpha: 0.45)
+                              : Brand.primary,
+                        ),
+                        iconColor: WidgetStateProperty.resolveWith(
+                          (states) => states.contains(WidgetState.disabled)
+                              ? Brand.primary.withValues(alpha: 0.45)
+                              : Brand.primary,
+                        ),
+                        side: WidgetStateProperty.resolveWith(
+                          (states) => BorderSide(
+                            color: states.contains(WidgetState.disabled)
+                                ? Brand.primary.withValues(alpha: 0.35)
+                                : Brand.primary,
+                          ),
+                        ),
+                        padding: const WidgetStatePropertyAll(
+                          EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        shape: WidgetStatePropertyAll(
+                          RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
                       ),
                       onPressed: _activeRangingId == null
@@ -359,18 +380,24 @@ class _HomeState extends State<_Home> {
               ),
               if (_devicesById.isNotEmpty) ...[
                 const SizedBox(height: 24),
-                Text('Discovered peers'.toUpperCase(), style: readoutLabelStyle()),
+                Text(
+                  'Discovered peers'.toUpperCase(),
+                  style: readoutLabelStyle(),
+                ),
                 const SizedBox(height: 8),
-                for (final d in _devicesById.values) _PeerTile(
-                      device: d,
-                      isActive: _activeRangingId == d.id,
-                      onPair: () => _pairAndRange(d),
-                    ),
+                for (final d in _devicesById.values)
+                  _PeerTile(
+                    device: d,
+                    isActive: _activeRangingId == d.id,
+                    onPair: () => _pairAndRange(d),
+                  ),
               ],
               if (_error != null) ...[
                 const SizedBox(height: 16),
-                Text(_error!,
-                    style: TextStyle(color: Colors.redAccent.shade100)),
+                Text(
+                  _error!,
+                  style: TextStyle(color: Colors.redAccent.shade100),
+                ),
               ],
               const SizedBox(height: 24),
               const _PoweredByFooter(),
@@ -455,10 +482,17 @@ class _PeerTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(device.name,
-                      style: const TextStyle(color: Brand.text, fontWeight: FontWeight.w500)),
-                  Text(device.platform,
-                      style: TextStyle(color: Brand.muted, fontSize: 11)),
+                  Text(
+                    device.name,
+                    style: const TextStyle(
+                      color: Brand.text,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    device.platform,
+                    style: TextStyle(color: Brand.muted, fontSize: 11),
+                  ),
                 ],
               ),
             ),

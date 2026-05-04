@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="180" height="32" viewBox="0 0 180 32" role="img" aria-label="flutter_uwb">
+<svg xmlns="http://www.w3.org/2000/svg" width="156" height="32" viewBox="0 0 156 32" role="img" aria-label="flutter_uwb">
   <title>flutter_uwb</title>
-  <rect x="0" y="0" width="180" height="32" rx="6" fill="#0A0E21" stroke="rgba(255,255,255,0.08)" stroke-width="1"></rect>
+  <rect x="0" y="0" width="156" height="32" rx="6" fill="#0A0E21" stroke="rgba(255,255,255,0.08)" stroke-width="1"></rect>
   <g transform="translate(16, 16)" fill="none">
     <circle cx="0" cy="0" r="9" stroke="#02569B" stroke-width="1.6"></circle>
     <circle cx="0" cy="0" r="5.5" stroke="#00E5FF" stroke-width="1.6"></circle>

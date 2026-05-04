@@ -84,7 +84,8 @@ class _RadarPainter extends CustomPainter {
     canvas.drawCircle(center, 4 * scale, Paint()..color = Brand.background);
 
     if (trackedNormalizedDistance != null) {
-      final r = (trackedNormalizedDistance!.clamp(0.0, 1.0)) * _ringOuter * scale;
+      final r =
+          (trackedNormalizedDistance!.clamp(0.0, 1.0)) * _ringOuter * scale;
       final a = trackedAngleRadians ?? -math.pi / 2;
       final dot = center + Offset(r * math.cos(a), -r * math.sin(a));
       canvas.drawCircle(dot, 6 * scale, Paint()..color = Brand.primary);
