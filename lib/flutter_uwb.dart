@@ -4,7 +4,16 @@ import 'dart:typed_data';
 import 'src/pigeon/uwb.g.dart';
 
 export 'src/pigeon/uwb.g.dart'
-    show AccessoryProfile, RangingSample, TokenPayload, UwbDevice, UwbRole;
+    show
+        AccessoryProfile,
+        DeviceCapabilities,
+        RangingError,
+        RangingOptions,
+        RangingSample,
+        TokenPayload,
+        UwbDevice,
+        UwbErrorCode,
+        UwbRole;
 
 /// Thrown by [FlutterUwb] when a platform operation fails.
 class UwbException implements Exception {
@@ -70,7 +79,7 @@ class FlutterUwb {
   // -------- Helpers --------
 
   void _check(VoidResult r) {
-    if (!(r.ok ?? false)) throw UwbException(r.error ?? 'unknown error');
+    if (!r.ok) throw UwbException(r.error ?? 'unknown error');
   }
 
   // -------- Discovery / OOB --------
@@ -148,11 +157,10 @@ class FlutterUwb {
       deviceId,
       TokenPayload(bytes: myToken),
     );
-    final bytes = out.bytes;
-    if (bytes == null || bytes.isEmpty) {
+    if (out.bytes.isEmpty) {
       throw const UwbException('exchangeTokens: platform returned empty token');
     }
-    return bytes;
+    return out.bytes;
   }
 
   // -------- UWB --------
@@ -169,11 +177,10 @@ class FlutterUwb {
   /// Throws [UwbException] if the token is unavailable.
   Future<Uint8List> getLocalToken(UwbRole role) async {
     final t = await _api.getLocalToken(role);
-    final bytes = t.bytes;
-    if (bytes == null || bytes.isEmpty) {
+    if (t.bytes.isEmpty) {
       throw const UwbException('getLocalToken: platform returned empty token');
     }
-    return bytes;
+    return t.bytes;
   }
 
   /// Convenience method that combines [getLocalToken] and [exchangeTokens]
@@ -197,8 +204,19 @@ class FlutterUwb {
   /// errors on [rangingErrors].
   ///
   /// Throws [UwbException] on failure.
-  Future<void> startRanging(String deviceId) async =>
-      _check(await _api.startRanging(deviceId));
+  Future<void> startRanging(
+    String deviceId, {
+    RangingOptions? options,
+  }) async =>
+      _check(await _api.startRanging(
+        deviceId,
+        options ?? RangingOptions(),
+      ));
+
+  /// Snapshot of the local UWB radio's capabilities. iOS-only fields are
+  /// `false` on Android; Android-only fields are empty/zero on iOS.
+  Future<DeviceCapabilities> getDeviceCapabilities() =>
+      _api.getDeviceCapabilities();
 
   /// Stop the active UWB ranging session and release platform resources.
   ///
@@ -208,10 +226,13 @@ class FlutterUwb {
 
 /// Carries a platform error raised inside an active ranging session.
 class RangingErrorEvent {
-  RangingErrorEvent(this.deviceId, this.message);
+  RangingErrorEvent(this.deviceId, this.code, this.message);
 
   /// The peer whose session produced the error.
   final String deviceId;
+
+  /// Stable error category mapped from the platform reason code.
+  final UwbErrorCode code;
 
   /// Human-readable description of the error.
   final String message;
@@ -242,14 +263,13 @@ class _FlutterApiHandler extends UwbFlutterApi {
   }
 
   @override
-  void onRangingError(String deviceId, String message) {
-    parent._errors.add(RangingErrorEvent(deviceId, message));
+  void onRangingError(String deviceId, RangingError error) {
+    parent._errors.add(RangingErrorEvent(deviceId, error.code, error.message));
   }
 
   @override
   void onIncomingRequest(UwbDevice device, TokenPayload peerToken) {
-    final bytes = peerToken.bytes ?? Uint8List(0);
-    parent._incomingRequests.add(IncomingRequest(device, bytes));
+    parent._incomingRequests.add(IncomingRequest(device, peerToken.bytes));
   }
 }
 
@@ -295,5 +315,8 @@ Future<bool> isUwbAvailable() => _instance.isUwbAvailable();
 Future<Uint8List> getLocalToken(UwbRole role) => _instance.getLocalToken(role);
 Future<void> pairWith(String deviceId, {UwbRole role = UwbRole.controller}) =>
     _instance.pairWith(deviceId, role: role);
-Future<void> startRanging(String deviceId) => _instance.startRanging(deviceId);
+Future<void> startRanging(String deviceId, {RangingOptions? options}) =>
+    _instance.startRanging(deviceId, options: options);
+Future<DeviceCapabilities> getDeviceCapabilities() =>
+    _instance.getDeviceCapabilities();
 Future<void> stopRanging() => _instance.stopRanging();

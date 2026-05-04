@@ -50,8 +50,12 @@ example/android/local.properties
 # Example app lock file (may contain private mirror URLs)
 example/pubspec.lock
 
-# Internal agent/planning docs
+# Internal agent/planning docs (private — never publish)
 doc/agents/
+docs/agents/
+
+# Internal dev tooling (not part of the published library)
+tools/
 
 # AI assistant config files
 CLAUDE.md

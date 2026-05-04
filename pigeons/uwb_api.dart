@@ -5,16 +5,22 @@ import 'package:pigeon/pigeon.dart';
 @ConfigurePigeon(
   PigeonOptions(
     dartOut: 'lib/src/pigeon/uwb.g.dart',
-    kotlinOut: 'android/src/main/kotlin/com/ahmedhamdan/flutter_uwb/UwbPigeon.g.kt',
+    kotlinOut:
+        'android/src/main/kotlin/com/ahmedhamdan/flutter_uwb/UwbPigeon.g.kt',
     kotlinOptions: KotlinOptions(package: 'com.ahmedhamdan.flutter_uwb'),
     swiftOut: 'ios/Classes/UwbPigeon.g.swift',
   ),
 )
-
 class UwbDevice {
-  String? id;
-  String? name;
-  String? platform;
+  UwbDevice({
+    required this.id,
+    required this.name,
+    required this.platform,
+  });
+
+  String id;
+  String name;
+  String platform;
 }
 
 /// BLE service + characteristic triplet describing an accessory.
@@ -28,18 +34,27 @@ class UwbDevice {
 /// the Dart side can filter; pass `null` for the built-in Apple-FiRa
 /// handling (`UwbDevice.platform == "accessory"`).
 class AccessoryProfile {
-  String? serviceUuid;
-  String? rxUuid;
-  String? txUuid;
+  AccessoryProfile({
+    required this.serviceUuid,
+    required this.rxUuid,
+    required this.txUuid,
+    this.vendorTag,
+  });
+
+  String serviceUuid;
+  String rxUuid;
+  String txUuid;
   String? vendorTag;
 }
 
 class TokenPayload {
-  Uint8List? bytes;
+  TokenPayload({required this.bytes});
+  Uint8List bytes;
 }
 
 class VoidResult {
-  bool? ok;
+  VoidResult({required this.ok, this.error});
+  bool ok;
   String? error;
 }
 
@@ -49,12 +64,81 @@ enum UwbRole {
   controlee,
 }
 
+/// Stable error code surface for the [RangingError] raised from a UWB
+/// session. The native sides map their respective platform errors
+/// (`RangingResultFailure.reasonCode` / `STATE_CHANGE_REASON_*` on
+/// Android; `NIError.Code` / `CBError.Code` on iOS) onto these values.
+enum UwbErrorCode {
+  permissionDenied,
+  uwbDisabled,
+  peerLost,
+  regionalRestriction,
+  sessionInitFailed,
+  transportError,
+  unknown,
+}
+
+/// Error raised from a UWB session.
+class RangingError {
+  RangingError({required this.code, required this.message});
+  UwbErrorCode code;
+  String message;
+}
+
+/// Options modulating a ranging session. iOS-only flags are no-ops on
+/// Android.
+class RangingOptions {
+  RangingOptions({this.cameraAssist = false, this.extendedDistance = false});
+
+  /// iOS only. Enables `NINearbyPeerConfiguration.isCameraAssistanceEnabled`.
+  /// Requires `NSCameraUsageDescription` in the host app's Info.plist.
+  bool cameraAssist;
+
+  /// iOS 17.4+ accessory only. Enables
+  /// `NINearbyAccessoryConfiguration.isExtendedDistanceMeasurementEnabled`.
+  bool extendedDistance;
+}
+
+/// What the local UWB radio supports. Some fields are platform-specific:
+/// the iOS-only flags are always `false` on Android, and the Android-only
+/// ranging-stack details (channels, config IDs, AoA, min interval) are
+/// always empty / zero on iOS.
+class DeviceCapabilities {
+  DeviceCapabilities({
+    required this.supportsPreciseDistance,
+    required this.supportsDirection,
+    required this.supportsCameraAssist,
+    required this.supportsExtendedDistance,
+    required this.supportedChannels,
+    required this.supportedConfigIds,
+    this.minRangingIntervalMs,
+    required this.supportsAoa,
+  });
+
+  bool supportsPreciseDistance;
+  bool supportsDirection;
+  bool supportsCameraAssist;
+  bool supportsExtendedDistance;
+  List<int?> supportedChannels;
+  List<int?> supportedConfigIds;
+  int? minRangingIntervalMs;
+  bool supportsAoa;
+}
+
 class RangingSample {
-  String? deviceId;
-  double? distanceMeters;
+  RangingSample({
+    required this.deviceId,
+    required this.distanceMeters,
+    this.azimuthDegrees,
+    this.elevationDegrees,
+    required this.elapsedRealtimeNanos,
+  });
+
+  String deviceId;
+  double distanceMeters;
   double? azimuthDegrees;
   double? elevationDegrees;
-  int? elapsedRealtimeNanos;
+  int elapsedRealtimeNanos;
 }
 
 @HostApi()
@@ -93,10 +177,16 @@ abstract class UwbHostApi {
   TokenPayload getLocalToken(UwbRole role);
 
   @async
-  VoidResult startRanging(String deviceId);
+  VoidResult startRanging(String deviceId, RangingOptions options);
 
   @async
   VoidResult stopRanging();
+
+  /// Snapshot of the local UWB radio's capabilities. Returns the
+  /// platform-specific profile (iOS-only fields are false on Android,
+  /// Android-only fields are empty on iOS).
+  @async
+  DeviceCapabilities getDeviceCapabilities();
 }
 
 /// Callbacks from the host platform up to Dart.
@@ -106,6 +196,6 @@ abstract class UwbFlutterApi {
   void onDeviceLost(String deviceId);
   void onRangingSample(RangingSample sample);
   void onPeerLost(String deviceId);
-  void onRangingError(String deviceId, String message);
+  void onRangingError(String deviceId, RangingError error);
   void onIncomingRequest(UwbDevice device, TokenPayload peerToken);
 }

@@ -63,8 +63,7 @@ void main() {
       expect(await FlutterUwb.instance.isUwbAvailable(), isTrue);
     });
 
-    test('isUwbAvailable forwards false through the Pigeon channel',
-        () async {
+    test('isUwbAvailable forwards false through the Pigeon channel', () async {
       const codec = pigeon.UwbHostApi.pigeonChannelCodec;
       binaryMessenger.setMockMessageHandler(_hostChan('isUwbAvailable'),
           (ByteData? message) async => codec.encodeMessage(<Object?>[false]));
@@ -79,8 +78,7 @@ void main() {
           pigeon.VoidResult(ok: true),
         ]);
       });
-      final result = await FlutterUwb.instance.startDiscovery('demo');
-      expect(result.ok, isTrue);
+      await FlutterUwb.instance.startDiscovery('demo');
     });
 
     test('exchangeTokens returns the bytes from the host', () async {
@@ -101,8 +99,8 @@ void main() {
         () async {
       const codec = pigeon.UwbHostApi.pigeonChannelCodec;
       pigeon.AccessoryProfile? captured;
-      binaryMessenger.setMockMessageHandler(_hostChan('registerAccessoryProfile'),
-          (ByteData? message) async {
+      binaryMessenger.setMockMessageHandler(
+          _hostChan('registerAccessoryProfile'), (ByteData? message) async {
         final args = codec.decodeMessage(message)! as List<Object?>;
         captured = args[0] as pigeon.AccessoryProfile;
         return codec.encodeMessage(<Object?>[
@@ -110,14 +108,13 @@ void main() {
         ]);
       });
 
-      final result = await FlutterUwb.instance.registerAccessoryProfile(
+      await FlutterUwb.instance.registerAccessoryProfile(
         serviceUuid: '48FE7E40-CB7C-470E-89ED-5B85A13E67EE',
         rxUuid: '6E63FF01-87A8-490B-AF2F-FC1D4B67F77A',
         txUuid: '6E63FF02-87A8-490B-AF2F-FC1D4B67F77A',
         vendorTag: 'qorvo',
       );
 
-      expect(result.ok, isTrue);
       expect(captured?.serviceUuid, '48FE7E40-CB7C-470E-89ED-5B85A13E67EE');
       expect(captured?.rxUuid, '6E63FF01-87A8-490B-AF2F-FC1D4B67F77A');
       expect(captured?.txUuid, '6E63FF02-87A8-490B-AF2F-FC1D4B67F77A');
@@ -127,8 +124,8 @@ void main() {
     test('unregisterAccessoryProfile forwards the serviceUuid', () async {
       const codec = pigeon.UwbHostApi.pigeonChannelCodec;
       String? capturedServiceUuid;
-      binaryMessenger.setMockMessageHandler(_hostChan('unregisterAccessoryProfile'),
-          (ByteData? message) async {
+      binaryMessenger.setMockMessageHandler(
+          _hostChan('unregisterAccessoryProfile'), (ByteData? message) async {
         final args = codec.decodeMessage(message)! as List<Object?>;
         capturedServiceUuid = args[0] as String;
         return codec.encodeMessage(<Object?>[
@@ -136,10 +133,9 @@ void main() {
         ]);
       });
 
-      final result = await FlutterUwb.instance
+      await FlutterUwb.instance
           .unregisterAccessoryProfile('48FE7E40-CB7C-470E-89ED-5B85A13E67EE');
 
-      expect(result.ok, isTrue);
       expect(capturedServiceUuid, '48FE7E40-CB7C-470E-89ED-5B85A13E67EE');
     });
 
@@ -239,7 +235,11 @@ void main() {
       final received = <RangingErrorEvent>[];
       final sub = FlutterUwb.instance.rangingErrors.listen(received.add);
 
-      final msg = codec.encodeMessage(<Object?>['device-1', 'kaboom']);
+      final error = pigeon.RangingError(
+        code: pigeon.UwbErrorCode.transportError,
+        message: 'kaboom',
+      );
+      final msg = codec.encodeMessage(<Object?>['device-1', error]);
       await binaryMessenger.handlePlatformMessage(
         _flutterChan('onRangingError'),
         msg,
@@ -249,6 +249,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(received, hasLength(1));
       expect(received.first.deviceId, 'device-1');
+      expect(received.first.code, UwbErrorCode.transportError);
       expect(received.first.message, 'kaboom');
       await sub.cancel();
     });

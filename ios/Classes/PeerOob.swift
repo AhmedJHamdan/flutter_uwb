@@ -25,10 +25,12 @@ import MultipeerConnectivity
 ///
 /// Foreground only. MultipeerConnectivity does not deliver invitations
 /// reliably while the app is backgrounded.
-@available(iOS 14.0, *)
 final class PeerOob: NSObject {
   protocol Callback: AnyObject {
-    func onPeerDeviceFound(id: String, name: String)
+    /// - Parameter capability: remote peer's [OobCapability] byte.
+    ///   Defaults to `OobCapability.unknownDefault` when the
+    ///   advertisement omits the discovery-info entry.
+    func onPeerDeviceFound(id: String, name: String, capability: UInt8)
     func onPeerDeviceLost(id: String)
     func onIncomingRequest(id: String, name: String, peerToken: Data)
     func onConnected(id: String, name: String)
@@ -81,7 +83,7 @@ final class PeerOob: NSObject {
 
     let advertiser = MCNearbyServiceAdvertiser(
       peer: peerID,
-      discoveryInfo: nil,
+      discoveryInfo: OobCapability.discoveryInfo(),
       serviceType: Self.serviceType
     )
     advertiser.delegate = self
@@ -220,7 +222,6 @@ final class PeerOob: NSObject {
 
 // MARK: - MCNearbyServiceBrowserDelegate
 
-@available(iOS 14.0, *)
 extension PeerOob: MCNearbyServiceBrowserDelegate {
   func browser(
     _ browser: MCNearbyServiceBrowser,
@@ -233,7 +234,8 @@ extension PeerOob: MCNearbyServiceBrowserDelegate {
     let isNew = peers[id] == nil
     peers[id] = peerID
     if isNew {
-      callback?.onPeerDeviceFound(id: id, name: id)
+      let capability = OobCapability.parseDiscoveryInfo(info)
+      callback?.onPeerDeviceFound(id: id, name: id, capability: capability)
     }
   }
 
@@ -253,7 +255,6 @@ extension PeerOob: MCNearbyServiceBrowserDelegate {
 
 // MARK: - MCNearbyServiceAdvertiserDelegate
 
-@available(iOS 14.0, *)
 extension PeerOob: MCNearbyServiceAdvertiserDelegate {
   func advertiser(
     _ advertiser: MCNearbyServiceAdvertiser,
@@ -265,7 +266,13 @@ extension PeerOob: MCNearbyServiceAdvertiserDelegate {
     let id = peerID.displayName
     if peers[id] == nil {
       peers[id] = peerID
-      callback?.onPeerDeviceFound(id: id, name: id)
+      // We don't get the inviter's discoveryInfo here; assume same-OS
+      // peer (the only thing MPC can reach).
+      callback?.onPeerDeviceFound(
+        id: id,
+        name: id,
+        capability: OobCapability.iosPeer
+      )
     }
     invitationHandler(true, session)
   }
@@ -280,7 +287,6 @@ extension PeerOob: MCNearbyServiceAdvertiserDelegate {
 
 // MARK: - MCSessionDelegate
 
-@available(iOS 14.0, *)
 extension PeerOob: MCSessionDelegate {
   func session(
     _ session: MCSession,

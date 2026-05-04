@@ -10,7 +10,9 @@ import androidx.core.uwb.UwbControleeSessionScope
 import androidx.core.uwb.UwbControllerSessionScope
 import androidx.core.uwb.UwbManager
 import androidx.core.uwb.UwbDevice as JetpackUwbDevice
+import com.ahmedhamdan.flutter_uwb.RangingError
 import com.ahmedhamdan.flutter_uwb.RangingSample
+import com.ahmedhamdan.flutter_uwb.UwbErrorCode
 import com.ahmedhamdan.flutter_uwb.UwbFlutterApi
 import com.ahmedhamdan.flutter_uwb.UwbRole
 import java.nio.ByteBuffer
@@ -44,6 +46,12 @@ class AndroidPeerStrategy(
     private val uwbManager: UwbManager,
     private val flutterApi: UwbFlutterApi,
     private val rangingScope: CoroutineScope,
+    /**
+     * 16-byte Provisioned STS session key derived from the BLE OOB
+     * ECDH handshake. Null falls back to unencrypted ranging — only
+     * used in tests; production callers always pass a key.
+     */
+    private val sessionKeyInfo: ByteArray? = null,
 ) : RangingStrategy {
 
     private val tag = "flutter_uwb"
@@ -65,7 +73,10 @@ class AndroidPeerStrategy(
                     Log.e(tag, "ranging flow error", t)
                     flutterApi.onRangingError(
                         deviceId,
-                        t.message ?: "ranging error",
+                        RangingError(
+                            code = UwbErrorCode.UNKNOWN,
+                            message = t.message ?: "ranging error",
+                        ),
                     ) {}
                 }
                 .collect { /* drained by onEach */ }
@@ -87,7 +98,7 @@ class AndroidPeerStrategy(
                 /* uwbConfigType  */ RangingParameters.CONFIG_UNICAST_DS_TWR,
                 /* sessionId      */ peer.sessionId,
                 /* subSessionId   */ 0,
-                /* sessionKeyInfo */ null,
+                /* sessionKeyInfo */ sessionKeyInfo,
                 /* subSessionKey  */ null,
                 /* complexChannel */ UwbComplexChannel(
                     peer.channel.toInt(),
@@ -108,7 +119,7 @@ class AndroidPeerStrategy(
                 if (localSessionId != 0) localSessionId
                 else (SecureRandom().nextInt(Int.MAX_VALUE - 1) + 1).also { localSessionId = it },
                 0,
-                null,
+                sessionKeyInfo,
                 null,
                 scope.uwbComplexChannel,
                 listOf(JetpackUwbDevice(UwbAddress(peer.shortAddressBytes()))),
@@ -122,9 +133,10 @@ class AndroidPeerStrategy(
         when (result) {
             is RangingResult.RangingResultPosition -> {
                 val pos = result.position
+                val distance = pos.distance?.value?.toDouble() ?: return
                 val sample = RangingSample(
                     deviceId = deviceId,
-                    distanceMeters = pos.distance?.value?.toDouble(),
+                    distanceMeters = distance,
                     azimuthDegrees = pos.azimuth?.value?.toDouble(),
                     elevationDegrees = pos.elevation?.value?.toDouble(),
                     elapsedRealtimeNanos = pos.elapsedRealtimeNanos,
@@ -133,6 +145,19 @@ class AndroidPeerStrategy(
             }
             is RangingResult.RangingResultPeerDisconnected -> {
                 flutterApi.onPeerLost(deviceId) {}
+            }
+            is RangingResult.RangingResultInitialized -> {
+                Log.d(tag, "ranging session initialized for $deviceId")
+            }
+            is RangingResult.RangingResultFailure -> {
+                Log.w(tag, "ranging failure for $deviceId reason=${result.reason}")
+                flutterApi.onRangingError(
+                    deviceId,
+                    RangingError(
+                        code = UwbErrorCode.UNKNOWN,
+                        message = "ranging failure (reason=${result.reason})",
+                    ),
+                ) {}
             }
         }
     }

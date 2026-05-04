@@ -1,8 +1,14 @@
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_uwb/src/accessory/apple_protocol.dart';
+
+Uint8List _fixture(String name) {
+  final f = File('test/fixtures/apple_protocol/$name');
+  return Uint8List.fromList(f.readAsBytesSync());
+}
 
 void main() {
   group('AppleAccessoryMessageId', () {
@@ -69,8 +75,7 @@ void main() {
       );
     });
 
-    test('AccessoryConfigurationData with empty payload encodes to [0x01]',
-        () {
+    test('AccessoryConfigurationData with empty payload encodes to [0x01]', () {
       expect(
         AccessoryConfigurationData(Uint8List(0)).encode(),
         Uint8List.fromList([0x01]),
@@ -237,6 +242,45 @@ void main() {
         () => AppleAccessoryMessage.decode(Uint8List.fromList([0x02, 0x01])),
         throwsA(isA<AppleAccessoryProtocolException>()),
       );
+    });
+  });
+
+  group('Golden file fixtures', () {
+    test('initialize.bin decodes to Initialize', () {
+      expect(AppleAccessoryMessage.decode(_fixture('initialize.bin')),
+          isA<Initialize>());
+    });
+
+    test('stop.bin decodes to Stop', () {
+      expect(AppleAccessoryMessage.decode(_fixture('stop.bin')), isA<Stop>());
+    });
+
+    test('accessory_uwb_did_start.bin decodes to AccessoryUwbDidStart', () {
+      expect(
+        AppleAccessoryMessage.decode(_fixture('accessory_uwb_did_start.bin')),
+        isA<AccessoryUwbDidStart>(),
+      );
+    });
+
+    test('accessory_uwb_did_stop.bin decodes to AccessoryUwbDidStop', () {
+      expect(
+        AppleAccessoryMessage.decode(_fixture('accessory_uwb_did_stop.bin')),
+        isA<AccessoryUwbDidStop>(),
+      );
+    });
+
+    test('synthetic AccessoryConfigurationData round-trips', () {
+      final bytes = _fixture('accessory_configuration_data_synthetic.bin');
+      final decoded = AppleAccessoryMessage.decode(bytes);
+      expect(decoded, isA<AccessoryConfigurationData>());
+      expect((decoded as AccessoryConfigurationData).encode(), equals(bytes));
+    });
+
+    test('synthetic ConfigureAndStart round-trips', () {
+      final bytes = _fixture('configure_and_start_synthetic.bin');
+      final decoded = AppleAccessoryMessage.decode(bytes);
+      expect(decoded, isA<ConfigureAndStart>());
+      expect((decoded as ConfigureAndStart).encode(), equals(bytes));
     });
   });
 

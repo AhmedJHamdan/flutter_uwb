@@ -26,8 +26,10 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelUuid
+import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
+import java.security.PrivateKey
 import java.util.UUID
 
 class BleOob(private val ctx: Context) {
@@ -40,7 +42,12 @@ class BleOob(private val ctx: Context) {
     )
 
     interface Callback {
-        fun onDeviceFound(id: String, name: String)
+        /**
+         * @param capability remote peer's [OobCapability] byte. Defaults
+         * to [OobCapability.UNKNOWN_DEFAULT] when the advertisement omits
+         * service-data (pre-0.4.0 peers).
+         */
+        fun onDeviceFound(id: String, name: String, capability: Byte)
         fun onIncomingRequest(id: String, name: String)
         fun onConnected(id: String, name: String)
         fun onDisconnected(id: String, name: String)
@@ -65,8 +72,60 @@ class BleOob(private val ctx: Context) {
     private val CHAR_NOTIFY = UUID.fromString("c9a0a82b-0c5a-4b8e-9e2e-5dbe2d08f7c3")
     private val CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
+    /** Type byte prefix on the inner (post-reassembly) wire. */
+    private companion object {
+        const val MSG_HANDSHAKE: Byte = 0x01
+        const val MSG_TOKEN: Byte = 0x02
+        /**
+         * Capability conveyance frame, sent by an iOS peripheral to
+         * Android centrals immediately after they subscribe to NOTIFY.
+         * Body is a single byte matching [OobCapability]. Required
+         * because iOS BLE advertisements cannot carry service-data, so
+         * the central learns the peer's platform on connect.
+         */
+        const val MSG_CAPS: Byte = 0x03
+        const val PREFERRED_MTU: Int = 247
+        const val DEFAULT_MTU: Int = 23
+
+        /**
+         * First-byte values an Apple-FiRa host writes on the symmetric
+         * `CHAR_WRITE`. Values come from
+         * `lib/src/accessory/apple_protocol.dart` and the WWDC 2022
+         * `NIAccessory.swift` sample.
+         */
+        const val AppleHostInitialize: Byte = 0x0A
+        const val AppleHostConfigureAndStart: Byte = 0x0B
+        const val AppleHostStop: Byte = 0x0C
+    }
+
     private var accessoryProfiles: List<AccessoryProfile> = emptyList()
     private val accessoryTxChars = HashMap<UUID, BluetoothGattCharacteristic>()
+
+    /**
+     * Per-central role on the GATT server, decided by the first byte
+     * written to the symmetric `CHAR_WRITE` characteristic. iOS hosts
+     * write `Initialize` (0x0A) first; Android peers write
+     * `MSG_HANDSHAKE` (0x01) first. The two value spaces don't overlap
+     * for first-byte purposes (Apple host messages are 0x0A/0x0B/0x0C,
+     * peer-mode messages are 0x01/0x02), so the dispatch is
+     * unambiguous.
+     */
+    private enum class CentralMode { PeerHandshake, AppleAccessory }
+    private val centralModes = HashMap<String, CentralMode>()
+
+    /**
+     * For centrals routed to [CentralMode.AppleAccessory], the service
+     * UUID of the BLE service they connected on. Picks the right
+     * NOTIFY characteristic for outbound `accessoryNotify` calls (the
+     * symmetric `SVC` for cross-OS iOS hosts, or the vendor profile's
+     * `txUuid` for registered Apple-FiRa accessory profiles).
+     */
+    private val accessoryServiceByCentral = HashMap<String, UUID>()
+
+    private fun isAppleHostMessage(first: Byte): Boolean = when (first) {
+        AppleHostInitialize, AppleHostConfigureAndStart, AppleHostStop -> true
+        else -> false
+    }
 
     private val btMgr by lazy { ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager }
     private val adapter: BluetoothAdapter? get() = btMgr.adapter
@@ -79,8 +138,30 @@ class BleOob(private val ctx: Context) {
     private val pendingCentrals = HashMap<String, BluetoothDevice>()
     private val seenAdvertisers = HashSet<String>()
 
+    /** Per-central server-side handshake/key state, keyed by BLE address. */
+    private val serverHandshakes = HashMap<String, OobHandshake.LocalKeyPair>()
+    private val serverKeys = HashMap<String, OobHandshake.SessionKeys>()
+    private val serverReassemblers = HashMap<String, BleFramer.Reassembler>()
+    private val serverMtus = HashMap<String, Int>()
+
+    /** Single active client connection state — only one outbound exchange at a time. */
+    private var clientLocalPair: OobHandshake.LocalKeyPair? = null
+    private var clientKeys: OobHandshake.SessionKeys? = null
+    private val clientReassembler = BleFramer.Reassembler()
+    private var clientMtu: Int = DEFAULT_MTU
+    private var clientDeviceId: String? = null
+    private var clientMyToken: ByteArray? = null
+    private var clientOnPeer: ((ByteArray) -> Unit)? = null
+    private var clientOnErr: ((String) -> Unit)? = null
+
     private val advertiseCallback = object : AdvertiseCallback() {
-        override fun onStartFailure(errorCode: Int) { cb?.onError("BLE advertise failed: $errorCode") }
+        override fun onStartFailure(errorCode: Int) {
+            Log.e("flutter_uwb", "BLE advertise failed: $errorCode")
+            cb?.onError("BLE advertise failed: $errorCode")
+        }
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+            Log.i("flutter_uwb", "BLE advertise success: $settingsInEffect")
+        }
     }
 
     private fun permsOk(): Boolean {
@@ -99,19 +180,36 @@ class BleOob(private val ctx: Context) {
     }
 
     fun start(localName: String) {
+        Log.i("flutter_uwb", "BleOob.start name=$localName profiles=${accessoryProfiles.size}")
         val a = adapter
         if (a == null || !a.isEnabled) { cb?.onError("Bluetooth disabled or unavailable"); return }
         if (!permsOk()) { cb?.onError("Bluetooth permissions missing"); return }
 
         seenAdvertisers.clear()
         pendingCentrals.clear()
+        serverHandshakes.clear()
+        serverKeys.clear()
+        serverReassemblers.clear()
+        serverMtus.clear()
+        centralModes.clear()
+        accessoryServiceByCentral.clear()
 
         val serverCb = object : BluetoothGattServerCallback() {
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     cb?.onDisconnected(device.address, deviceNameSafe(device))
                     pendingCentrals.remove(device.address)
+                    serverHandshakes.remove(device.address)
+                    serverKeys.remove(device.address)
+                    serverReassemblers.remove(device.address)
+                    serverMtus.remove(device.address)
+                    centralModes.remove(device.address)
+                    accessoryServiceByCentral.remove(device.address)
                 }
+            }
+
+            override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+                serverMtus[device.address] = mtu
             }
 
             override fun onCharacteristicWriteRequest(
@@ -124,18 +222,43 @@ class BleOob(private val ctx: Context) {
                 value: ByteArray,
             ) {
                 if (characteristic.uuid == CHAR_WRITE) {
-                    // Peer-mode token write.
-                    TokenStore.putPeer(device.address, value)
-                    pendingCentrals[device.address] = device
-                    cb?.onIncomingRequest(device.address, deviceNameSafe(device))
+                    Log.i(
+                        "flutter_uwb",
+                        "onCharWrite from=${device.address} bytes=${
+                            value.joinToString("") { "%02X".format(it) }
+                        }",
+                    )
+                    val mode = centralModes[device.address] ?: run {
+                        val first = if (value.isNotEmpty()) value[0] else 0
+                        val initial = if (isAppleHostMessage(first)) {
+                            CentralMode.AppleAccessory
+                        } else {
+                            CentralMode.PeerHandshake
+                        }
+                        centralModes[device.address] = initial
+                        initial
+                    }
+                    if (mode == CentralMode.AppleAccessory) {
+                        pendingCentrals[device.address] = device
+                        accessoryServiceByCentral[device.address] = SVC
+                        cb?.onAccessoryRequest(
+                            id = device.address,
+                            name = deviceNameSafe(device),
+                            serviceUuid = SVC,
+                            bytes = value,
+                        )
+                    } else {
+                        handleServerInbound(device, value)
+                    }
                 } else {
-                    // Accessory-mode write — match the characteristic to a
-                    // registered profile's Rx UUID.
                     val profile = accessoryProfiles.firstOrNull {
                         it.rxUuid == characteristic.uuid
                     }
                     if (profile != null) {
                         pendingCentrals[device.address] = device
+                        centralModes[device.address] = CentralMode.AppleAccessory
+                        accessoryServiceByCentral[device.address] =
+                            profile.serviceUuid
                         cb?.onAccessoryRequest(
                             id = device.address,
                             name = deviceNameSafe(device),
@@ -146,6 +269,40 @@ class BleOob(private val ctx: Context) {
                 }
                 if (responseNeeded) {
                     gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+                }
+            }
+
+            override fun onDescriptorReadRequest(
+                device: BluetoothDevice,
+                requestId: Int,
+                offset: Int,
+                descriptor: BluetoothGattDescriptor,
+            ) {
+                gattServer?.sendResponse(
+                    device, requestId, BluetoothGatt.GATT_SUCCESS, offset,
+                    BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE,
+                )
+            }
+
+            override fun onDescriptorWriteRequest(
+                device: BluetoothDevice,
+                requestId: Int,
+                descriptor: BluetoothGattDescriptor,
+                preparedWrite: Boolean,
+                responseNeeded: Boolean,
+                offset: Int,
+                value: ByteArray,
+            ) {
+                // Standard CCCD subscribe — iOS / Jetpack-UWB centrals
+                // both write [0x01, 0x00] to enable notifications.
+                // Without an explicit ack the central times out waiting
+                // for the response (~30 s) and disconnects, which is why
+                // cross-OS pair-and-range never reached the Apple-FiRa
+                // exchange before this handler existed.
+                if (responseNeeded) {
+                    gattServer?.sendResponse(
+                        device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null,
+                    )
                 }
             }
         }
@@ -203,23 +360,32 @@ class BleOob(private val ctx: Context) {
         }
 
         advertiser = a.bluetoothLeAdvertiser
+        // Legacy BLE advert is capped at 31 bytes — a 128-bit service
+        // UUID alone is 18 B, leaving no room for service-data in the
+        // primary packet. Put the capability byte in the scan response
+        // so an active scanner (iOS / Android) gets both packets
+        // merged into a single discovery callback.
         val adData = AdvertiseData.Builder()
-            .setIncludeDeviceName(true)
+            .setIncludeDeviceName(false)
             .addServiceUuid(ParcelUuid(SVC))
-        accessoryProfiles.firstOrNull()?.let {
-            adData.addServiceUuid(ParcelUuid(it.serviceUuid))
-        }
+            .build()
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .addServiceData(ParcelUuid(SVC), OobCapability.localServiceData())
+            .build()
         advertiser?.startAdvertising(
             AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                 .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
                 .setConnectable(true)
                 .build(),
-            adData.build(),
+            adData,
+            scanResponse,
             advertiseCallback,
         )
 
         scanner = a.bluetoothLeScanner
+        Log.i("flutter_uwb", "starting scan for SVC=$SVC")
         scanner?.startScan(
             listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(SVC)).build()),
             ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
@@ -240,6 +406,13 @@ class BleOob(private val ctx: Context) {
         pendingCentrals.clear()
         seenAdvertisers.clear()
         accessoryTxChars.clear()
+        serverHandshakes.clear()
+        serverKeys.clear()
+        serverReassemblers.clear()
+        serverMtus.clear()
+        centralModes.clear()
+        accessoryServiceByCentral.clear()
+        resetClientState()
         TokenStore.clear()
     }
 
@@ -260,10 +433,26 @@ class BleOob(private val ctx: Context) {
      * `deviceId` is the BLE address of the central (matches the address
      * surfaced via [Callback.onAccessoryRequest]).
      */
+    /**
+     * Push host-bound bytes (Apple-FiRa accessory protocol response)
+     * back to a connected central. The target characteristic depends
+     * on which service the central is using:
+     *
+     * - Symmetric cross-OS (`SVC` / `CHAR_NOTIFY`) — used when an iOS
+     *   host connects over the shared symmetric profile, no
+     *   per-vendor `AccessoryProfile` registered.
+     * - Vendor-specific accessory profile — first registered profile's
+     *   `txUuid`. Multi-profile selection is a follow-up.
+     */
     fun accessoryNotify(deviceId: String, bytes: ByteArray) {
         val device = pendingCentrals[deviceId] ?: return
-        val tx = accessoryTxChars.values.firstOrNull() ?: return
-        notify(device, tx, bytes)
+        val service = accessoryServiceByCentral[deviceId] ?: SVC
+        val ch = if (service == SVC) {
+            gattServer?.getService(SVC)?.getCharacteristic(CHAR_NOTIFY)
+        } else {
+            accessoryTxChars[service]
+        } ?: return
+        notify(device, ch, bytes)
     }
 
     private val scanCb = object : ScanCallback() {
@@ -271,7 +460,22 @@ class BleOob(private val ctx: Context) {
             val d = res.device ?: return
             val addr = d.address ?: return
             if (!seenAdvertisers.add(addr)) return
-            cb?.onDeviceFound(addr, deviceNameSafe(d))
+            val record = res.scanRecord
+            val data = record?.serviceData?.get(ParcelUuid(SVC))
+            Log.i("flutter_uwb",
+                "scan hit addr=$addr name=${deviceNameSafe(d)} svcData=${
+                    data?.joinToString("") { "%02X".format(it) } ?: "nil"
+                }")
+            // iOS BLE advertisements cannot carry service-data, so a
+            // peer advertising the symmetric service UUID with no
+            // service-data is by convention an iOS host. Android
+            // always emits `[ANDROID_PEER]`.
+            val capability: Byte = if (data == null || data.isEmpty()) {
+                OobCapability.IOS_PEER
+            } else {
+                data[0]
+            }
+            cb?.onDeviceFound(addr, deviceNameSafe(d), capability)
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -279,10 +483,20 @@ class BleOob(private val ctx: Context) {
         }
     }
 
+    /**
+     * Server-side acceptor: send our token back over the established
+     * handshake channel as an HMAC-wrapped envelope.
+     */
     fun accept(deviceId: String, myToken: ByteArray) {
         val d = pendingCentrals[deviceId] ?: return
+        val keys = serverKeys[deviceId]
         val ch = gattServer?.getService(SVC)?.getCharacteristic(CHAR_NOTIFY) ?: return
-        notify(d, ch, myToken)
+        if (keys == null) {
+            cb?.onError("accept: no handshake keys for $deviceId")
+            return
+        }
+        val wrapped = OobHandshake.wrapToken(keys.macKey, myToken)
+        notifyTyped(d, ch, MSG_TOKEN, wrapped, mtu = serverMtus[deviceId] ?: DEFAULT_MTU)
         cb?.onConnected(d.address, deviceNameSafe(d))
     }
 
@@ -290,6 +504,12 @@ class BleOob(private val ctx: Context) {
         val d = pendingCentrals[deviceId] ?: return
         gattServer?.cancelConnection(d)
         pendingCentrals.remove(deviceId)
+        serverHandshakes.remove(deviceId)
+        serverKeys.remove(deviceId)
+        serverReassemblers.remove(deviceId)
+        serverMtus.remove(deviceId)
+        centralModes.remove(deviceId)
+        accessoryServiceByCentral.remove(deviceId)
     }
 
     fun exchange(
@@ -303,43 +523,223 @@ class BleOob(private val ctx: Context) {
             onErr("Invalid device id: $deviceId")
             return
         }
+        resetClientState()
+        clientDeviceId = deviceId
+        clientMyToken = myToken
+        clientOnPeer = onPeer
+        clientOnErr = onErr
+        clientLocalPair = OobHandshake.generateKeyPair()
+
         val dev = a.getRemoteDevice(deviceId)
         clientGatt = dev.connectGatt(ctx, false, object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    gatt.discoverServices()
-                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    cb?.onDisconnected(dev.address, deviceNameSafe(dev))
+                when (newState) {
+                    BluetoothProfile.STATE_CONNECTED -> {
+                        // Try to bump the MTU before discovering services so the
+                        // 32-byte handshake frame fits in a single ATT write.
+                        if (!gatt.requestMtu(PREFERRED_MTU)) {
+                            gatt.discoverServices()
+                        }
+                    }
+                    BluetoothProfile.STATE_DISCONNECTED -> {
+                        cb?.onDisconnected(dev.address, deviceNameSafe(dev))
+                        finishClientWithError("BLE disconnected")
+                    }
                 }
             }
 
+            override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+                clientMtu = if (status == BluetoothGatt.GATT_SUCCESS) mtu else DEFAULT_MTU
+                gatt.discoverServices()
+            }
+
             override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                val svc = gatt.getService(SVC) ?: return onErr("Service not found")
+                val svc = gatt.getService(SVC)
+                    ?: return finishClientWithError("Service not found")
                 val notifyChar = svc.getCharacteristic(CHAR_NOTIFY)
-                    ?: return onErr("Notify char not found")
+                    ?: return finishClientWithError("Notify char not found")
                 val writeChar = svc.getCharacteristic(CHAR_WRITE)
-                    ?: return onErr("Write char not found")
+                    ?: return finishClientWithError("Write char not found")
                 gatt.setCharacteristicNotification(notifyChar, true)
                 val ccc = notifyChar.getDescriptor(CCCD)
                 if (ccc != null) {
+                    @Suppress("DEPRECATION")
                     ccc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    @Suppress("DEPRECATION")
                     gatt.writeDescriptor(ccc)
                 }
-                writeChar.value = myToken
-                gatt.writeCharacteristic(writeChar)
+                // Send our handshake init frame: [MSG_HANDSHAKE | pubkey].
+                val pair = clientLocalPair
+                    ?: return finishClientWithError("No local handshake key")
+                writeTyped(gatt, writeChar, MSG_HANDSHAKE, pair.publicKey, mtu = clientMtu)
             }
 
             override fun onCharacteristicChanged(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
             ) {
-                if (characteristic.uuid == CHAR_NOTIFY) {
-                    onPeer(characteristic.value)
-                    cb?.onConnected(dev.address, deviceNameSafe(dev))
-                    gatt.disconnect()
-                }
+                if (characteristic.uuid != CHAR_NOTIFY) return
+                @Suppress("DEPRECATION")
+                val frame = characteristic.value ?: return
+                val assembled = clientReassembler.feed(frame) ?: return
+                handleClientAssembled(gatt, assembled)
             }
         })
+    }
+
+    // ---------------- Handshake helpers ----------------
+
+    /**
+     * Process a fully reassembled inbound message on the GATT-server side.
+     */
+    private fun handleServerInbound(device: BluetoothDevice, fragment: ByteArray) {
+        val r = serverReassemblers.getOrPut(device.address) { BleFramer.Reassembler() }
+        val message = r.feed(fragment) ?: return
+        if (message.isEmpty()) return
+        val type = message[0]
+        val body = message.copyOfRange(1, message.size)
+        when (type) {
+            MSG_HANDSHAKE -> {
+                if (body.size != OobHandshake.PUBLIC_KEY_LENGTH) {
+                    cb?.onError("handshake: bad pubkey length ${body.size}")
+                    return
+                }
+                val local = OobHandshake.generateKeyPair()
+                serverHandshakes[device.address] = local
+                val keys = try {
+                    OobHandshake.derive(local.privateKey, body)
+                } catch (t: Throwable) {
+                    cb?.onError("handshake: derive failed ${t.message}")
+                    return
+                }
+                serverKeys[device.address] = keys
+                pendingCentrals[device.address] = device
+                val ch = gattServer?.getService(SVC)?.getCharacteristic(CHAR_NOTIFY) ?: return
+                notifyTyped(
+                    device,
+                    ch,
+                    MSG_HANDSHAKE,
+                    local.publicKey,
+                    mtu = serverMtus[device.address] ?: DEFAULT_MTU,
+                )
+            }
+            MSG_TOKEN -> {
+                val keys = serverKeys[device.address] ?: run {
+                    cb?.onError("token before handshake from ${device.address}")
+                    return
+                }
+                val token = OobHandshake.unwrapToken(keys.macKey, body) ?: run {
+                    cb?.onError("token MAC verification failed from ${device.address}")
+                    return
+                }
+                TokenStore.putPeer(device.address, token, keys.sessionKey)
+                pendingCentrals[device.address] = device
+                cb?.onIncomingRequest(device.address, deviceNameSafe(device))
+            }
+            else -> cb?.onError("unknown handshake message type 0x${type.toInt() and 0xFF}")
+        }
+    }
+
+    /**
+     * Process a fully reassembled inbound message on the GATT-client side.
+     */
+    private fun handleClientAssembled(gatt: BluetoothGatt, message: ByteArray) {
+        if (message.isEmpty()) return
+        val type = message[0]
+        val body = message.copyOfRange(1, message.size)
+        when (type) {
+            MSG_HANDSHAKE -> {
+                if (body.size != OobHandshake.PUBLIC_KEY_LENGTH) {
+                    finishClientWithError("handshake: bad pubkey length ${body.size}")
+                    return
+                }
+                val pair = clientLocalPair
+                    ?: return finishClientWithError("No local handshake key")
+                val keys = try {
+                    OobHandshake.derive(pair.privateKey, body)
+                } catch (t: Throwable) {
+                    finishClientWithError("handshake derive: ${t.message}")
+                    return
+                }
+                clientKeys = keys
+                val token = clientMyToken
+                    ?: return finishClientWithError("No queued token")
+                val writeChar = gatt.getService(SVC)?.getCharacteristic(CHAR_WRITE)
+                    ?: return finishClientWithError("Write char gone")
+                val wrapped = OobHandshake.wrapToken(keys.macKey, token)
+                writeTyped(gatt, writeChar, MSG_TOKEN, wrapped, mtu = clientMtu)
+            }
+            MSG_TOKEN -> {
+                val keys = clientKeys
+                    ?: return finishClientWithError("Token before handshake")
+                val token = OobHandshake.unwrapToken(keys.macKey, body)
+                    ?: return finishClientWithError("Token MAC verification failed")
+                val deviceId = clientDeviceId
+                if (deviceId != null) {
+                    TokenStore.putPeer(deviceId, token, keys.sessionKey)
+                }
+                val onPeer = clientOnPeer
+                clientOnPeer = null
+                clientOnErr = null
+                onPeer?.invoke(token)
+                cb?.onConnected(gatt.device.address, deviceNameSafe(gatt.device))
+                gatt.disconnect()
+            }
+            else -> finishClientWithError("Unknown message type")
+        }
+    }
+
+    private fun finishClientWithError(msg: String) {
+        val onErr = clientOnErr
+        clientOnPeer = null
+        clientOnErr = null
+        onErr?.invoke(msg)
+    }
+
+    private fun resetClientState() {
+        clientLocalPair = null
+        clientKeys = null
+        clientReassembler.reset()
+        clientMtu = DEFAULT_MTU
+        clientDeviceId = null
+        clientMyToken = null
+        clientOnPeer = null
+        clientOnErr = null
+    }
+
+    // ---------------- Wire helpers ----------------
+
+    private fun writeTyped(
+        gatt: BluetoothGatt,
+        ch: BluetoothGattCharacteristic,
+        type: Byte,
+        body: ByteArray,
+        mtu: Int,
+    ) {
+        val full = ByteArray(1 + body.size)
+        full[0] = type
+        System.arraycopy(body, 0, full, 1, body.size)
+        for (frame in BleFramer.fragments(full, mtu)) {
+            @Suppress("DEPRECATION")
+            ch.value = frame
+            @Suppress("DEPRECATION")
+            gatt.writeCharacteristic(ch)
+        }
+    }
+
+    private fun notifyTyped(
+        d: BluetoothDevice,
+        ch: BluetoothGattCharacteristic,
+        type: Byte,
+        body: ByteArray,
+        mtu: Int,
+    ) {
+        val full = ByteArray(1 + body.size)
+        full[0] = type
+        System.arraycopy(body, 0, full, 1, body.size)
+        for (frame in BleFramer.fragments(full, mtu)) {
+            notify(d, ch, frame)
+        }
     }
 
     private fun notify(d: BluetoothDevice, ch: BluetoothGattCharacteristic, value: ByteArray) {

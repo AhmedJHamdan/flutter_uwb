@@ -8,7 +8,6 @@ import NearbyInteraction
 /// through the host's `UwbFlutterApi`. The host (`UwbHostApiImpl`) selects a
 /// concrete strategy based on `UwbDevice.platform` and forwards lifecycle
 /// events.
-@available(iOS 14.0, *)
 protocol RangingStrategy: AnyObject {
   /// The peer this strategy is talking to. Used by the host as a routing
   /// key when matching incoming events back to the right strategy.
@@ -29,8 +28,8 @@ protocol RangingStrategy: AnyObject {
 ///
 /// Shared across strategies — the geometry derivation is identical regardless
 /// of whether the peer is another iPhone or a FiRa accessory.
-@available(iOS 14.0, *)
-func makeSample(deviceId: String, object: NINearbyObject) -> RangingSample {
+func makeSample(deviceId: String, object: NINearbyObject) -> RangingSample? {
+  guard let distance = object.distance else { return nil }
   let azimuth: Double? = {
     guard let dir = object.direction else { return nil }
     // Direction is a unit vector in the device's reference frame.
@@ -43,7 +42,7 @@ func makeSample(deviceId: String, object: NINearbyObject) -> RangingSample {
   }()
   return RangingSample(
     deviceId: deviceId,
-    distanceMeters: object.distance.map { Double($0) },
+    distanceMeters: Double(distance),
     azimuthDegrees: azimuth,
     elevationDegrees: elevation,
     elapsedRealtimeNanos: Int64(Date().timeIntervalSince1970 * 1e9)

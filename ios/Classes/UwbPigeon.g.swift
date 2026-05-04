@@ -48,16 +48,30 @@ enum UwbRole: Int {
   case controlee = 1
 }
 
+/// Stable error code surface for the [RangingError] raised from a UWB
+/// session. The native sides map their respective platform errors
+/// (`RangingResultFailure.reasonCode` / `STATE_CHANGE_REASON_*` on
+/// Android; `NIError.Code` / `CBError.Code` on iOS) onto these values.
+enum UwbErrorCode: Int {
+  case permissionDenied = 0
+  case uwbDisabled = 1
+  case peerLost = 2
+  case regionalRestriction = 3
+  case sessionInitFailed = 4
+  case transportError = 5
+  case unknown = 6
+}
+
 /// Generated class from Pigeon that represents data sent in messages.
 struct UwbDevice {
-  var id: String? = nil
-  var name: String? = nil
-  var platform: String? = nil
+  var id: String
+  var name: String
+  var platform: String
 
   static func fromList(_ list: [Any?]) -> UwbDevice? {
-    let id: String? = nilOrValue(list[0])
-    let name: String? = nilOrValue(list[1])
-    let platform: String? = nilOrValue(list[2])
+    let id = list[0] as! String
+    let name = list[1] as! String
+    let platform = list[2] as! String
 
     return UwbDevice(
       id: id,
@@ -87,15 +101,15 @@ struct UwbDevice {
 ///
 /// Generated class from Pigeon that represents data sent in messages.
 struct AccessoryProfile {
-  var serviceUuid: String? = nil
-  var rxUuid: String? = nil
-  var txUuid: String? = nil
+  var serviceUuid: String
+  var rxUuid: String
+  var txUuid: String
   var vendorTag: String? = nil
 
   static func fromList(_ list: [Any?]) -> AccessoryProfile? {
-    let serviceUuid: String? = nilOrValue(list[0])
-    let rxUuid: String? = nilOrValue(list[1])
-    let txUuid: String? = nilOrValue(list[2])
+    let serviceUuid = list[0] as! String
+    let rxUuid = list[1] as! String
+    let txUuid = list[2] as! String
     let vendorTag: String? = nilOrValue(list[3])
 
     return AccessoryProfile(
@@ -117,10 +131,10 @@ struct AccessoryProfile {
 
 /// Generated class from Pigeon that represents data sent in messages.
 struct TokenPayload {
-  var bytes: FlutterStandardTypedData? = nil
+  var bytes: FlutterStandardTypedData
 
   static func fromList(_ list: [Any?]) -> TokenPayload? {
-    let bytes: FlutterStandardTypedData? = nilOrValue(list[0])
+    let bytes = list[0] as! FlutterStandardTypedData
 
     return TokenPayload(
       bytes: bytes
@@ -135,11 +149,11 @@ struct TokenPayload {
 
 /// Generated class from Pigeon that represents data sent in messages.
 struct VoidResult {
-  var ok: Bool? = nil
+  var ok: Bool
   var error: String? = nil
 
   static func fromList(_ list: [Any?]) -> VoidResult? {
-    let ok: Bool? = nilOrValue(list[0])
+    let ok = list[0] as! Bool
     let error: String? = nilOrValue(list[1])
 
     return VoidResult(
@@ -155,20 +169,124 @@ struct VoidResult {
   }
 }
 
+/// Error raised from a UWB session.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct RangingError {
+  var code: UwbErrorCode
+  var message: String
+
+  static func fromList(_ list: [Any?]) -> RangingError? {
+    let code = UwbErrorCode(rawValue: list[0] as! Int)!
+    let message = list[1] as! String
+
+    return RangingError(
+      code: code,
+      message: message
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      code.rawValue,
+      message,
+    ]
+  }
+}
+
+/// Options modulating a ranging session. iOS-only flags are no-ops on
+/// Android.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct RangingOptions {
+  /// iOS only. Enables `NINearbyPeerConfiguration.isCameraAssistanceEnabled`.
+  /// Requires `NSCameraUsageDescription` in the host app's Info.plist.
+  var cameraAssist: Bool
+  /// iOS 17.4+ accessory only. Enables
+  /// `NINearbyAccessoryConfiguration.isExtendedDistanceMeasurementEnabled`.
+  var extendedDistance: Bool
+
+  static func fromList(_ list: [Any?]) -> RangingOptions? {
+    let cameraAssist = list[0] as! Bool
+    let extendedDistance = list[1] as! Bool
+
+    return RangingOptions(
+      cameraAssist: cameraAssist,
+      extendedDistance: extendedDistance
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      cameraAssist,
+      extendedDistance,
+    ]
+  }
+}
+
+/// What the local UWB radio supports. Some fields are platform-specific:
+/// the iOS-only flags are always `false` on Android, and the Android-only
+/// ranging-stack details (channels, config IDs, AoA, min interval) are
+/// always empty / zero on iOS.
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct DeviceCapabilities {
+  var supportsPreciseDistance: Bool
+  var supportsDirection: Bool
+  var supportsCameraAssist: Bool
+  var supportsExtendedDistance: Bool
+  var supportedChannels: [Int64?]
+  var supportedConfigIds: [Int64?]
+  var minRangingIntervalMs: Int64? = nil
+  var supportsAoa: Bool
+
+  static func fromList(_ list: [Any?]) -> DeviceCapabilities? {
+    let supportsPreciseDistance = list[0] as! Bool
+    let supportsDirection = list[1] as! Bool
+    let supportsCameraAssist = list[2] as! Bool
+    let supportsExtendedDistance = list[3] as! Bool
+    let supportedChannels = list[4] as! [Int64?]
+    let supportedConfigIds = list[5] as! [Int64?]
+    let minRangingIntervalMs: Int64? = isNullish(list[6]) ? nil : (list[6] is Int64? ? list[6] as! Int64? : Int64(list[6] as! Int32))
+    let supportsAoa = list[7] as! Bool
+
+    return DeviceCapabilities(
+      supportsPreciseDistance: supportsPreciseDistance,
+      supportsDirection: supportsDirection,
+      supportsCameraAssist: supportsCameraAssist,
+      supportsExtendedDistance: supportsExtendedDistance,
+      supportedChannels: supportedChannels,
+      supportedConfigIds: supportedConfigIds,
+      minRangingIntervalMs: minRangingIntervalMs,
+      supportsAoa: supportsAoa
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      supportsPreciseDistance,
+      supportsDirection,
+      supportsCameraAssist,
+      supportsExtendedDistance,
+      supportedChannels,
+      supportedConfigIds,
+      minRangingIntervalMs,
+      supportsAoa,
+    ]
+  }
+}
+
 /// Generated class from Pigeon that represents data sent in messages.
 struct RangingSample {
-  var deviceId: String? = nil
-  var distanceMeters: Double? = nil
+  var deviceId: String
+  var distanceMeters: Double
   var azimuthDegrees: Double? = nil
   var elevationDegrees: Double? = nil
-  var elapsedRealtimeNanos: Int64? = nil
+  var elapsedRealtimeNanos: Int64
 
   static func fromList(_ list: [Any?]) -> RangingSample? {
-    let deviceId: String? = nilOrValue(list[0])
-    let distanceMeters: Double? = nilOrValue(list[1])
+    let deviceId = list[0] as! String
+    let distanceMeters = list[1] as! Double
     let azimuthDegrees: Double? = nilOrValue(list[2])
     let elevationDegrees: Double? = nilOrValue(list[3])
-    let elapsedRealtimeNanos: Int64? = isNullish(list[4]) ? nil : (list[4] is Int64? ? list[4] as! Int64? : Int64(list[4] as! Int32))
+    let elapsedRealtimeNanos = list[4] is Int64 ? list[4] as! Int64 : Int64(list[4] as! Int32)
 
     return RangingSample(
       deviceId: deviceId,
@@ -195,10 +313,14 @@ private class UwbHostApiCodecReader: FlutterStandardReader {
       case 128:
         return AccessoryProfile.fromList(self.readValue() as! [Any?])
       case 129:
-        return TokenPayload.fromList(self.readValue() as! [Any?])
+        return DeviceCapabilities.fromList(self.readValue() as! [Any?])
       case 130:
-        return UwbDevice.fromList(self.readValue() as! [Any?])
+        return RangingOptions.fromList(self.readValue() as! [Any?])
       case 131:
+        return TokenPayload.fromList(self.readValue() as! [Any?])
+      case 132:
+        return UwbDevice.fromList(self.readValue() as! [Any?])
+      case 133:
         return VoidResult.fromList(self.readValue() as! [Any?])
       default:
         return super.readValue(ofType: type)
@@ -211,14 +333,20 @@ private class UwbHostApiCodecWriter: FlutterStandardWriter {
     if let value = value as? AccessoryProfile {
       super.writeByte(128)
       super.writeValue(value.toList())
-    } else if let value = value as? TokenPayload {
+    } else if let value = value as? DeviceCapabilities {
       super.writeByte(129)
       super.writeValue(value.toList())
-    } else if let value = value as? UwbDevice {
+    } else if let value = value as? RangingOptions {
       super.writeByte(130)
       super.writeValue(value.toList())
-    } else if let value = value as? VoidResult {
+    } else if let value = value as? TokenPayload {
       super.writeByte(131)
+      super.writeValue(value.toList())
+    } else if let value = value as? UwbDevice {
+      super.writeByte(132)
+      super.writeValue(value.toList())
+    } else if let value = value as? VoidResult {
+      super.writeByte(133)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -260,8 +388,12 @@ protocol UwbHostApi {
   ///   [5..8] sessionId (u32, controller only)
   /// On iOS the bytes are an `NSKeyedArchiver`-encoded `NIDiscoveryToken`.
   func getLocalToken(role: UwbRole, completion: @escaping (Result<TokenPayload, Error>) -> Void)
-  func startRanging(deviceId: String, completion: @escaping (Result<VoidResult, Error>) -> Void)
+  func startRanging(deviceId: String, options: RangingOptions, completion: @escaping (Result<VoidResult, Error>) -> Void)
   func stopRanging(completion: @escaping (Result<VoidResult, Error>) -> Void)
+  /// Snapshot of the local UWB radio's capabilities. Returns the
+  /// platform-specific profile (iOS-only fields are false on Android,
+  /// Android-only fields are empty on iOS).
+  func getDeviceCapabilities(completion: @escaping (Result<DeviceCapabilities, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -435,7 +567,8 @@ class UwbHostApiSetup {
       startRangingChannel.setMessageHandler { message, reply in
         let args = message as! [Any?]
         let deviceIdArg = args[0] as! String
-        api.startRanging(deviceId: deviceIdArg) { result in
+        let optionsArg = args[1] as! RangingOptions
+        api.startRanging(deviceId: deviceIdArg, options: optionsArg) { result in
           switch result {
             case .success(let res):
               reply(wrapResult(res))
@@ -462,16 +595,36 @@ class UwbHostApiSetup {
     } else {
       stopRangingChannel.setMessageHandler(nil)
     }
+    /// Snapshot of the local UWB radio's capabilities. Returns the
+    /// platform-specific profile (iOS-only fields are false on Android,
+    /// Android-only fields are empty on iOS).
+    let getDeviceCapabilitiesChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.flutter_uwb.UwbHostApi.getDeviceCapabilities", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      getDeviceCapabilitiesChannel.setMessageHandler { _, reply in
+        api.getDeviceCapabilities() { result in
+          switch result {
+            case .success(let res):
+              reply(wrapResult(res))
+            case .failure(let error):
+              reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      getDeviceCapabilitiesChannel.setMessageHandler(nil)
+    }
   }
 }
 private class UwbFlutterApiCodecReader: FlutterStandardReader {
   override func readValue(ofType type: UInt8) -> Any? {
     switch type {
       case 128:
-        return RangingSample.fromList(self.readValue() as! [Any?])
+        return RangingError.fromList(self.readValue() as! [Any?])
       case 129:
-        return TokenPayload.fromList(self.readValue() as! [Any?])
+        return RangingSample.fromList(self.readValue() as! [Any?])
       case 130:
+        return TokenPayload.fromList(self.readValue() as! [Any?])
+      case 131:
         return UwbDevice.fromList(self.readValue() as! [Any?])
       default:
         return super.readValue(ofType: type)
@@ -481,14 +634,17 @@ private class UwbFlutterApiCodecReader: FlutterStandardReader {
 
 private class UwbFlutterApiCodecWriter: FlutterStandardWriter {
   override func writeValue(_ value: Any) {
-    if let value = value as? RangingSample {
+    if let value = value as? RangingError {
       super.writeByte(128)
       super.writeValue(value.toList())
-    } else if let value = value as? TokenPayload {
+    } else if let value = value as? RangingSample {
       super.writeByte(129)
       super.writeValue(value.toList())
-    } else if let value = value as? UwbDevice {
+    } else if let value = value as? TokenPayload {
       super.writeByte(130)
+      super.writeValue(value.toList())
+    } else if let value = value as? UwbDevice {
+      super.writeByte(131)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -518,7 +674,7 @@ protocol UwbFlutterApiProtocol {
   func onDeviceLost(deviceId deviceIdArg: String, completion: @escaping (Result<Void, FlutterError>) -> Void)
   func onRangingSample(sample sampleArg: RangingSample, completion: @escaping (Result<Void, FlutterError>) -> Void)
   func onPeerLost(deviceId deviceIdArg: String, completion: @escaping (Result<Void, FlutterError>) -> Void)
-  func onRangingError(deviceId deviceIdArg: String, message messageArg: String, completion: @escaping (Result<Void, FlutterError>) -> Void)
+  func onRangingError(deviceId deviceIdArg: String, error errorArg: RangingError, completion: @escaping (Result<Void, FlutterError>) -> Void)
   func onIncomingRequest(device deviceArg: UwbDevice, peerToken peerTokenArg: TokenPayload, completion: @escaping (Result<Void, FlutterError>) -> Void)
 }
 class UwbFlutterApi: UwbFlutterApiProtocol {
@@ -601,10 +757,10 @@ class UwbFlutterApi: UwbFlutterApiProtocol {
       }
     }
   }
-  func onRangingError(deviceId deviceIdArg: String, message messageArg: String, completion: @escaping (Result<Void, FlutterError>) -> Void) {
+  func onRangingError(deviceId deviceIdArg: String, error errorArg: RangingError, completion: @escaping (Result<Void, FlutterError>) -> Void) {
     let channelName: String = "dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onRangingError"
     let channel = FlutterBasicMessageChannel(name: channelName, binaryMessenger: binaryMessenger, codec: codec)
-    channel.sendMessage([deviceIdArg, messageArg] as [Any?]) { response in
+    channel.sendMessage([deviceIdArg, errorArg] as [Any?]) { response in
       guard let listResponse = response as? [Any?] else {
         completion(.failure(createConnectionError(withChannelName:channelName)))
         return

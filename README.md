@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://pub.dev/packages/flutter_uwb"><img src="https://img.shields.io/pub/v/flutter_uwb.svg?label=pub&color=blue" alt="pub.dev"/></a>
   <img src="https://img.shields.io/badge/Android-API%2023%2B-3DDC84?logo=android&logoColor=white" alt="Android"/>
-  <img src="https://img.shields.io/badge/iOS-14%2B-000000?logo=apple&logoColor=white" alt="iOS"/>
+  <img src="https://img.shields.io/badge/iOS-16%2B-000000?logo=apple&logoColor=white" alt="iOS"/>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-purple.svg" alt="License"/></a>
 </p>
 
@@ -81,7 +81,7 @@ Full API docs: <https://pub.dev/documentation/flutter_uwb/latest/>
 
 ## Accessory mode (Apple FiRa tags)
 
-Register the accessory's vendor BLE UUIDs once, then range like any other peer — no token exchange required.
+For third-party FiRa accessories (Qorvo, NXP, etc.), register the accessory's vendor BLE UUIDs once, then range like any other peer — no token exchange required. (iPhones running `flutter_uwb` are auto-discovered on Android without this step.)
 
 ```dart
 await uwb.registerAccessoryProfile(
@@ -111,7 +111,30 @@ The plugin manifest already declares the required `<uses-permission>` entries. Y
 | ≤ 30      | `ACCESS_FINE_LOCATION`                                                           |
 | 33+       | additionally `UWB_RANGING`                                                       |
 
-Use [`permission_handler`](https://pub.dev/packages/permission_handler) or your preferred approach.
+Drop this in your activity (no extra packages):
+
+```kotlin
+import android.Manifest
+import android.os.Build
+import androidx.core.app.ActivityCompat
+
+private val perms: Array<String> = buildList {
+  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    add(Manifest.permission.BLUETOOTH_SCAN)
+    add(Manifest.permission.BLUETOOTH_ADVERTISE)
+    add(Manifest.permission.BLUETOOTH_CONNECT)
+  } else {
+    add(Manifest.permission.ACCESS_FINE_LOCATION)
+  }
+  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    add(Manifest.permission.UWB_RANGING)
+  }
+}.toTypedArray()
+
+ActivityCompat.requestPermissions(this, perms, /*requestCode*/ 1)
+```
+
+Or use [`permission_handler`](https://pub.dev/packages/permission_handler) if you already depend on it.
 </details>
 
 <details>
@@ -143,16 +166,43 @@ The Bonjour service names must match exactly. If you only target Android peers o
 
 | Platform    | Minimum hardware                                                            | Notes                                                                                       |
 | ----------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **Android** | Pixel 6 Pro+, Galaxy S21 Ultra+, or any device exposing `FEATURE_UWB`        | Accessory/controlee mode requires Pixel 7 Pro+ on Android 14+                               |
-| **iOS**     | iPhone with U1/U2 chip (iPhone 11+, excluding SE 2/3) on iOS 14+             | Accessory mode needs iOS 15+                                                                |
+| **Android** | Pixel 6 Pro+, Galaxy S21 Ultra+, or any device exposing `FEATURE_UWB`        | Accessory/controlee mode requires Pixel 7 Pro+ on Android 14+; Provisioned STS keyed by ECDH OOB on 0.4.0+ |
+| **iOS**     | iPhone with U1/U2 chip (iPhone 11+, excluding SE 2/3) on iOS 16+             | Camera assist & extended distance gated by `RangingOptions`; iOS 14/15 hosts must pin to 0.3.1            |
 
 `isUwbAvailable()` returns `false` on emulators, the iOS simulator, and devices without a UWB chip — always check it before calling discovery.
 
 > **iOS 26 / U2 chip caveat.** Apple disabled `supportsDirectionMeasurement` for the U2 chip on iOS 26, so iPhone 15 Pro / Pro Max and the iPhone 16 series report `null` for `azimuthDegrees` and `elevationDegrees`. Distance is unaffected. See Apple Developer Forums thread 822522.
 
+> **Cross-OS (iPhone ↔ Android) is experimental in 0.4.0.** BLE discovery, the Apple-FiRa accessory handshake, and Android UWB session activation all complete, but the underlying `androidx.core.uwb` API rejects the slot duration Apple selects, so stable distance samples are not yet delivered. Same-OS pairs (iOS↔iOS, Android↔Android) are stable. iPhones are auto-discovered on Android and vice-versa — no `registerAccessoryProfile` boilerplate is needed for cross-OS.
+
+## RangingOptions
+
+`startRanging` accepts an optional `RangingOptions` for iOS-only opt-ins. Both default to `false`.
+
+```dart
+await uwb.startRanging(
+  device.id,
+  options: const RangingOptions(
+    cameraAssist: true,        // iOS — keeps direction continuous, even on iOS 26 / U2.
+    extendedDistance: false,   // iOS 17+ peer mode only — range beyond ~9 m.
+  ),
+);
+```
+
+- `cameraAssist` enables `NINearbyPeerConfiguration.isCameraAssistanceEnabled` (or the accessory equivalent) and runs an `ARSession` alongside `NISession`. Requires `NSCameraUsageDescription` in your `Info.plist`. On iOS 26 with the U2 chip this is the only way to keep `azimuth`/`elevation` non-`null`.
+- `extendedDistance` toggles `NINearbyPeerConfiguration.isExtendedDistanceMeasurementEnabled` (iOS 17+, peer mode). Calling `startRanging` against an older runtime returns `transportError`. Apple's accessory configuration does not surface this flag.
+
+Use `getDeviceCapabilities()` to gate the toggles in your UI:
+
+```dart
+final caps = await uwb.getDeviceCapabilities();
+if (caps.supportsCameraAssist) { /* show the camera-assist switch */ }
+if (caps.supportsExtendedDistance) { /* show the extended-distance switch */ }
+```
+
 ## Architecture
 
-For protocol details, token format, and the BLE topology used for discovery and out-of-band exchange, see [`doc/architecture.md`](doc/architecture.md).
+For protocol details, token format, BLE/UWB topology, the ECDH-keyed Provisioned STS handshake, and the cross-OS capability-flag routing matrix, see [`doc/architecture.md`](doc/architecture.md).
 
 ## License
 
