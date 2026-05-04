@@ -1,10 +1,15 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_uwb/flutter_uwb.dart';
 
+import 'brand.dart';
 import 'qorvo_accessory.dart';
+import 'widgets/radar.dart';
+import 'widgets/readout_card.dart';
 
 void main() {
   runApp(const ExampleApp());
@@ -16,14 +21,8 @@ class ExampleApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'flutter_uwb example',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.deepPurple,
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-      ),
+      title: 'flutter_uwb',
+      theme: buildBrandTheme(),
       home: const _Home(),
     );
   }
@@ -38,6 +37,7 @@ class _Home extends StatefulWidget {
 
 class _HomeState extends State<_Home> {
   final FlutterUwb _uwb = FlutterUwb.instance;
+
   bool? _uwbAvailable;
   bool _scanning = false;
   String? _error;
@@ -47,6 +47,7 @@ class _HomeState extends State<_Home> {
   final Map<String, UwbDevice> _devicesById = {};
   RangingSample? _lastSample;
   String? _activeRangingId;
+
   StreamSubscription<UwbDevice>? _deviceFoundSub;
   StreamSubscription<String>? _deviceLostSub;
   StreamSubscription<RangingSample>? _samplesSub;
@@ -162,9 +163,6 @@ class _HomeState extends State<_Home> {
   Future<void> _pairAndRange(UwbDevice device) async {
     final id = device.id;
     try {
-      // Apple-FiRa accessory peers (cross-OS or vendor accessories)
-      // negotiate session keys inside startRanging itself; same-OS
-      // peers need a token exchange first.
       if (!device.platform.startsWith('accessory')) {
         await _uwb.pairWith(id);
         if (!mounted) return;
@@ -185,20 +183,6 @@ class _HomeState extends State<_Home> {
     }
   }
 
-  String _rangingSubtitle() {
-    if (_lastSample == null) return 'waiting for first sample…';
-    final distance =
-        'distance: ${_lastSample!.distanceMeters.toStringAsFixed(2)} m';
-    // Hide az/el on devices whose UWB hardware lacks AoA (iPhone 14+
-    // ship a single UWB antenna; direction can never populate).
-    if (_capabilities?.supportsDirection == false) {
-      return '$distance · distance only on this device';
-    }
-    final az = _lastSample!.azimuthDegrees?.toStringAsFixed(1) ?? '?';
-    final el = _lastSample!.elevationDegrees?.toStringAsFixed(1) ?? '?';
-    return '$distance · az: $az° · el: $el°';
-  }
-
   Future<void> _stopRanging() async {
     try {
       await _uwb.stopRanging();
@@ -211,96 +195,279 @@ class _HomeState extends State<_Home> {
     }
   }
 
+  void _togglePrecisionFind() {
+    final caps = _capabilities;
+    final canCamera = caps?.supportsCameraAssist ?? false;
+    final canExtended = caps?.supportsExtendedDistance ?? false;
+    setState(() {
+      if (_cameraAssist || _extendedDistance) {
+        _cameraAssist = false;
+        _extendedDistance = false;
+      } else {
+        _cameraAssist = canCamera;
+        _extendedDistance = canExtended;
+      }
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          _cameraAssist || _extendedDistance
+              ? 'Precision Find on'
+              : 'Precision Find off',
+        ),
+      ),
+    );
+  }
+
+  String get _distanceText {
+    final m = _lastSample?.distanceMeters;
+    return m == null ? '— m' : '${m.toStringAsFixed(2)} m';
+  }
+
+  String get _azimuthText {
+    final az = _lastSample?.azimuthDegrees;
+    if (_capabilities?.supportsDirection == false) return 'n/a';
+    return az == null ? '—°' : '${az.toStringAsFixed(0)}°';
+  }
+
+  String get _signalText {
+    if (!_scanning && _activeRangingId == null) return 'idle';
+    if (_activeRangingId != null && _lastSample != null) return 'live';
+    if (_activeRangingId != null) return 'pairing';
+    return 'scan';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+    final radarSize = math.min(size.width - 64, 320.0);
+    final tracked = _trackedPolar();
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('flutter_uwb example'),
+        backgroundColor: Brand.background,
+        elevation: 0,
+        title: Text(
+          'flutter_uwb',
+          style: TextStyle(
+            color: Brand.text,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.4,
+          ),
+        ),
         actions: [
           IconButton(
             tooltip: 'Qorvo accessory demo',
-            icon: const Icon(Icons.sensors),
+            icon: const Icon(Icons.sensors, color: Brand.muted),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const QorvoAccessoryScreen()),
             ),
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Card(
-              child: ListTile(
-                title: const Text('UWB hardware'),
-                subtitle: Text(switch (_uwbAvailable) {
-                  null => 'checking…',
-                  true => 'available on this device',
-                  false => 'not available',
-                }),
-                trailing: IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: _checkUwb,
-                ),
-              ),
-            ),
-            if (_capabilities != null) _CapabilitiesCard(_capabilities!),
-            _RangingOptionsCard(
-              cameraAssist: _cameraAssist,
-              extendedDistance: _extendedDistance,
-              cameraAssistSupported:
-                  _capabilities?.supportsCameraAssist ?? false,
-              extendedDistanceSupported:
-                  _capabilities?.supportsExtendedDistance ?? false,
-              directionSupported: _capabilities?.supportsDirection ?? false,
-              onCameraAssistChanged: (v) => setState(() => _cameraAssist = v),
-              onExtendedDistanceChanged: (v) =>
-                  setState(() => _extendedDistance = v),
-            ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              icon: Icon(_scanning ? Icons.stop : Icons.search),
-              label: Text(_scanning ? 'Stop discovery' : 'Start discovery'),
-              onPressed: _toggleScan,
-            ),
-            if (_activeRangingId != null) ...[
-              const SizedBox(height: 12),
-              Card(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                child: ListTile(
-                  title: Text('Ranging $_activeRangingId'),
-                  subtitle: Text(_rangingSubtitle()),
-                  trailing: TextButton(
-                    onPressed: _stopRanging,
-                    child: const Text('Stop'),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('UWB · RANGING', style: eyebrowStyle()),
+              const SizedBox(height: 18),
+              Center(
+                child: SizedBox(
+                  width: radarSize,
+                  child: Radar(
+                    trackedNormalizedDistance: tracked?.$1,
+                    trackedAngleRadians: tracked?.$2,
                   ),
                 ),
               ),
-            ],
-            if (_error != null) ...[
+              const SizedBox(height: 18),
+              if (_uwbAvailable == false)
+                _StatusBanner(
+                  text: 'UWB hardware not available on this device',
+                  color: Brand.muted,
+                ),
+              if (_uwbAvailable == true && _activeRangingId == null && !_scanning)
+                _StatusBanner(text: 'Tap Start Ranging to discover peers'),
+              if (_scanning && _activeRangingId == null)
+                _StatusBanner(text: 'Scanning for peers…'),
               const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
-            ],
-            const SizedBox(height: 12),
-            Expanded(
-              child: _devicesById.isEmpty
-                  ? const Center(child: Text('No devices yet'))
-                  : ListView(
-                      children: [
-                        for (final d in _devicesById.values)
-                          ListTile(
-                            leading: const Icon(Icons.phone_android),
-                            title: Text(d.name),
-                            subtitle: Text('${d.platform} · ${d.id}'),
-                            trailing: TextButton(
-                              onPressed: () => _pairAndRange(d),
-                              child: const Text('Pair & range'),
-                            ),
-                          ),
-                      ],
+              Row(
+                children: [
+                  Expanded(
+                    child: ReadoutCard(label: 'Distance', value: _distanceText),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ReadoutCard(label: 'Azimuth', value: _azimuthText),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ReadoutCard(label: 'Signal', value: _signalText),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Brand.primary,
+                        foregroundColor: Brand.background,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      onPressed: _scanning && _activeRangingId == null
+                          ? _toggleScan
+                          : (_activeRangingId != null
+                              ? _stopRanging
+                              : _toggleScan),
+                      child: Text(
+                        _activeRangingId != null
+                            ? 'Stop Ranging'
+                            : (_scanning ? 'Stop Discovery' : 'Start Ranging'),
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
                     ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Brand.primary,
+                        side: const BorderSide(color: Brand.primary),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      onPressed: _activeRangingId == null
+                          ? null
+                          : _togglePrecisionFind,
+                      icon: const Icon(Icons.navigation_outlined, size: 18),
+                      label: const Text(
+                        'Precision Find',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (_devicesById.isNotEmpty) ...[
+                const SizedBox(height: 24),
+                Text('Discovered peers'.toUpperCase(), style: readoutLabelStyle()),
+                const SizedBox(height: 8),
+                for (final d in _devicesById.values) _PeerTile(
+                      device: d,
+                      isActive: _activeRangingId == d.id,
+                      onPair: () => _pairAndRange(d),
+                    ),
+              ],
+              if (_error != null) ...[
+                const SizedBox(height: 16),
+                Text(_error!,
+                    style: TextStyle(color: Colors.redAccent.shade100)),
+              ],
+              const SizedBox(height: 24),
+              const _PoweredByFooter(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Project a `RangingSample` onto the radar canvas. Distance is normalised
+  /// against a 9 m envelope (the BPRF default); azimuth degrees → radians.
+  (double, double)? _trackedPolar() {
+    final s = _lastSample;
+    if (s == null) return null;
+    final r = (s.distanceMeters / 9.0).clamp(0.0, 1.0);
+    final azDeg = s.azimuthDegrees ?? 90.0;
+    final a = (90 - azDeg) * math.pi / 180.0;
+    return (r, a);
+  }
+}
+
+class _StatusBanner extends StatelessWidget {
+  const _StatusBanner({required this.text, this.color});
+
+  final String text;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF13182F),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Brand.muted.withValues(alpha: 0.25)),
+      ),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: TextStyle(color: color ?? Brand.text, fontSize: 13),
+      ),
+    );
+  }
+}
+
+class _PeerTile extends StatelessWidget {
+  const _PeerTile({
+    required this.device,
+    required this.isActive,
+    required this.onPair,
+  });
+
+  final UwbDevice device;
+  final bool isActive;
+  final VoidCallback onPair;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+        decoration: BoxDecoration(
+          color: const Color(0xFF13182F),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isActive
+                ? Brand.primary
+                : Brand.muted.withValues(alpha: 0.25),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              isActive ? Icons.radar : Icons.phone_android,
+              color: isActive ? Brand.primary : Brand.muted,
+              size: 20,
             ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(device.name,
+                      style: const TextStyle(color: Brand.text, fontWeight: FontWeight.w500)),
+                  Text(device.platform,
+                      style: TextStyle(color: Brand.muted, fontSize: 11)),
+                ],
+              ),
+            ),
+            if (!isActive)
+              TextButton(
+                onPressed: onPair,
+                style: TextButton.styleFrom(foregroundColor: Brand.primary),
+                child: const Text('Pair & range'),
+              ),
           ],
         ),
       ),
@@ -308,78 +475,16 @@ class _HomeState extends State<_Home> {
   }
 }
 
-class _CapabilitiesCard extends StatelessWidget {
-  const _CapabilitiesCard(this.caps);
-
-  final DeviceCapabilities caps;
+class _PoweredByFooter extends StatelessWidget {
+  const _PoweredByFooter();
 
   @override
   Widget build(BuildContext context) {
-    final lines = <String>[
-      'distance: ${caps.supportsPreciseDistance ? "yes" : "no"}'
-          ' · direction: ${caps.supportsDirection ? "yes" : "no"}',
-      'camera assist: ${caps.supportsCameraAssist ? "yes" : "no"}'
-          ' · extended distance: ${caps.supportsExtendedDistance ? "yes" : "no"}',
-      if (caps.supportedChannels.isNotEmpty)
-        'channels: ${caps.supportedChannels.join(", ")}',
-      if (caps.supportedConfigIds.isNotEmpty)
-        'configIds: ${caps.supportedConfigIds.join(", ")}',
-      if (caps.minRangingIntervalMs != null)
-        'min interval: ${caps.minRangingIntervalMs} ms',
-    ];
-    return Card(
-      child: ListTile(
-        title: const Text('Capabilities'),
-        subtitle: Text(lines.join('\n')),
-        isThreeLine: true,
-      ),
-    );
-  }
-}
-
-class _RangingOptionsCard extends StatelessWidget {
-  const _RangingOptionsCard({
-    required this.cameraAssist,
-    required this.extendedDistance,
-    required this.cameraAssistSupported,
-    required this.extendedDistanceSupported,
-    required this.directionSupported,
-    required this.onCameraAssistChanged,
-    required this.onExtendedDistanceChanged,
-  });
-
-  final bool cameraAssist;
-  final bool extendedDistance;
-  final bool cameraAssistSupported;
-  final bool extendedDistanceSupported;
-  final bool directionSupported;
-  final ValueChanged<bool> onCameraAssistChanged;
-  final ValueChanged<bool> onExtendedDistanceChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final cameraAssistSubtitle = directionSupported
-        ? 'Run an ARSession alongside NISession to keep direction'
-        : 'This device has no UWB AoA antenna (iPhone 14+); camera assist '
-              'will not produce direction here, only on capable peers.';
-    return Card(
-      child: Column(
-        children: [
-          SwitchListTile(
-            title: const Text('Camera assist (iOS)'),
-            subtitle: Text(cameraAssistSubtitle),
-            value: cameraAssist,
-            onChanged: cameraAssistSupported ? onCameraAssistChanged : null,
-          ),
-          SwitchListTile(
-            title: const Text('Extended distance (iOS 17+ peer mode)'),
-            subtitle: const Text('Range beyond the default ~9m envelope'),
-            value: extendedDistance,
-            onChanged: extendedDistanceSupported
-                ? onExtendedDistanceChanged
-                : null,
-          ),
-        ],
+    return Center(
+      child: SvgPicture.asset(
+        '../assets/brand/badges/flutter_uwb_badge_solid.svg',
+        height: 24,
+        semanticsLabel: 'Powered by flutter_uwb',
       ),
     );
   }
