@@ -58,19 +58,41 @@ enum class UwbRole(val raw: Int) {
   }
 }
 
+/**
+ * Stable error code surface for the [RangingError] raised from a UWB
+ * session. The native sides map their respective platform errors
+ * (`RangingResultFailure.reasonCode` / `STATE_CHANGE_REASON_*` on
+ * Android; `NIError.Code` / `CBError.Code` on iOS) onto these values.
+ */
+enum class UwbErrorCode(val raw: Int) {
+  PERMISSIONDENIED(0),
+  UWBDISABLED(1),
+  PEERLOST(2),
+  REGIONALRESTRICTION(3),
+  SESSIONINITFAILED(4),
+  TRANSPORTERROR(5),
+  UNKNOWN(6);
+
+  companion object {
+    fun ofRaw(raw: Int): UwbErrorCode? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
 /** Generated class from Pigeon that represents data sent in messages. */
 data class UwbDevice (
-  val id: String? = null,
-  val name: String? = null,
-  val platform: String? = null
+  val id: String,
+  val name: String,
+  val platform: String
 
 ) {
   companion object {
     @Suppress("UNCHECKED_CAST")
     fun fromList(list: List<Any?>): UwbDevice {
-      val id = list[0] as String?
-      val name = list[1] as String?
-      val platform = list[2] as String?
+      val id = list[0] as String
+      val name = list[1] as String
+      val platform = list[2] as String
       return UwbDevice(id, name, platform)
     }
   }
@@ -98,18 +120,18 @@ data class UwbDevice (
  * Generated class from Pigeon that represents data sent in messages.
  */
 data class AccessoryProfile (
-  val serviceUuid: String? = null,
-  val rxUuid: String? = null,
-  val txUuid: String? = null,
+  val serviceUuid: String,
+  val rxUuid: String,
+  val txUuid: String,
   val vendorTag: String? = null
 
 ) {
   companion object {
     @Suppress("UNCHECKED_CAST")
     fun fromList(list: List<Any?>): AccessoryProfile {
-      val serviceUuid = list[0] as String?
-      val rxUuid = list[1] as String?
-      val txUuid = list[2] as String?
+      val serviceUuid = list[0] as String
+      val rxUuid = list[1] as String
+      val txUuid = list[2] as String
       val vendorTag = list[3] as String?
       return AccessoryProfile(serviceUuid, rxUuid, txUuid, vendorTag)
     }
@@ -126,13 +148,13 @@ data class AccessoryProfile (
 
 /** Generated class from Pigeon that represents data sent in messages. */
 data class TokenPayload (
-  val bytes: ByteArray? = null
+  val bytes: ByteArray
 
 ) {
   companion object {
     @Suppress("UNCHECKED_CAST")
     fun fromList(list: List<Any?>): TokenPayload {
-      val bytes = list[0] as ByteArray?
+      val bytes = list[0] as ByteArray
       return TokenPayload(bytes)
     }
   }
@@ -145,14 +167,14 @@ data class TokenPayload (
 
 /** Generated class from Pigeon that represents data sent in messages. */
 data class VoidResult (
-  val ok: Boolean? = null,
+  val ok: Boolean,
   val error: String? = null
 
 ) {
   companion object {
     @Suppress("UNCHECKED_CAST")
     fun fromList(list: List<Any?>): VoidResult {
-      val ok = list[0] as Boolean?
+      val ok = list[0] as Boolean
       val error = list[1] as String?
       return VoidResult(ok, error)
     }
@@ -165,23 +187,131 @@ data class VoidResult (
   }
 }
 
+/**
+ * Error raised from a UWB session.
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class RangingError (
+  val code: UwbErrorCode,
+  val message: String
+
+) {
+  companion object {
+    @Suppress("UNCHECKED_CAST")
+    fun fromList(list: List<Any?>): RangingError {
+      val code = UwbErrorCode.ofRaw(list[0] as Int)!!
+      val message = list[1] as String
+      return RangingError(code, message)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf<Any?>(
+      code.raw,
+      message,
+    )
+  }
+}
+
+/**
+ * Options modulating a ranging session. iOS-only flags are no-ops on
+ * Android.
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class RangingOptions (
+  /**
+   * iOS only. Enables `NINearbyPeerConfiguration.isCameraAssistanceEnabled`.
+   * Requires `NSCameraUsageDescription` in the host app's Info.plist.
+   */
+  val cameraAssist: Boolean,
+  /**
+   * iOS 17.4+ accessory only. Enables
+   * `NINearbyAccessoryConfiguration.isExtendedDistanceMeasurementEnabled`.
+   */
+  val extendedDistance: Boolean
+
+) {
+  companion object {
+    @Suppress("UNCHECKED_CAST")
+    fun fromList(list: List<Any?>): RangingOptions {
+      val cameraAssist = list[0] as Boolean
+      val extendedDistance = list[1] as Boolean
+      return RangingOptions(cameraAssist, extendedDistance)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf<Any?>(
+      cameraAssist,
+      extendedDistance,
+    )
+  }
+}
+
+/**
+ * What the local UWB radio supports. Some fields are platform-specific:
+ * the iOS-only flags are always `false` on Android, and the Android-only
+ * ranging-stack details (channels, config IDs, AoA, min interval) are
+ * always empty / zero on iOS.
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class DeviceCapabilities (
+  val supportsPreciseDistance: Boolean,
+  val supportsDirection: Boolean,
+  val supportsCameraAssist: Boolean,
+  val supportsExtendedDistance: Boolean,
+  val supportedChannels: List<Long?>,
+  val supportedConfigIds: List<Long?>,
+  val minRangingIntervalMs: Long? = null,
+  val supportsAoa: Boolean
+
+) {
+  companion object {
+    @Suppress("UNCHECKED_CAST")
+    fun fromList(list: List<Any?>): DeviceCapabilities {
+      val supportsPreciseDistance = list[0] as Boolean
+      val supportsDirection = list[1] as Boolean
+      val supportsCameraAssist = list[2] as Boolean
+      val supportsExtendedDistance = list[3] as Boolean
+      val supportedChannels = list[4] as List<Long?>
+      val supportedConfigIds = list[5] as List<Long?>
+      val minRangingIntervalMs = list[6].let { if (it is Int) it.toLong() else it as Long? }
+      val supportsAoa = list[7] as Boolean
+      return DeviceCapabilities(supportsPreciseDistance, supportsDirection, supportsCameraAssist, supportsExtendedDistance, supportedChannels, supportedConfigIds, minRangingIntervalMs, supportsAoa)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf<Any?>(
+      supportsPreciseDistance,
+      supportsDirection,
+      supportsCameraAssist,
+      supportsExtendedDistance,
+      supportedChannels,
+      supportedConfigIds,
+      minRangingIntervalMs,
+      supportsAoa,
+    )
+  }
+}
+
 /** Generated class from Pigeon that represents data sent in messages. */
 data class RangingSample (
-  val deviceId: String? = null,
-  val distanceMeters: Double? = null,
+  val deviceId: String,
+  val distanceMeters: Double,
   val azimuthDegrees: Double? = null,
   val elevationDegrees: Double? = null,
-  val elapsedRealtimeNanos: Long? = null
+  val elapsedRealtimeNanos: Long
 
 ) {
   companion object {
     @Suppress("UNCHECKED_CAST")
     fun fromList(list: List<Any?>): RangingSample {
-      val deviceId = list[0] as String?
-      val distanceMeters = list[1] as Double?
+      val deviceId = list[0] as String
+      val distanceMeters = list[1] as Double
       val azimuthDegrees = list[2] as Double?
       val elevationDegrees = list[3] as Double?
-      val elapsedRealtimeNanos = list[4].let { if (it is Int) it.toLong() else it as Long? }
+      val elapsedRealtimeNanos = list[4].let { if (it is Int) it.toLong() else it as Long }
       return RangingSample(deviceId, distanceMeters, azimuthDegrees, elevationDegrees, elapsedRealtimeNanos)
     }
   }
@@ -207,15 +337,25 @@ private object UwbHostApiCodec : StandardMessageCodec() {
       }
       129.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          TokenPayload.fromList(it)
+          DeviceCapabilities.fromList(it)
         }
       }
       130.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          UwbDevice.fromList(it)
+          RangingOptions.fromList(it)
         }
       }
       131.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          TokenPayload.fromList(it)
+        }
+      }
+      132.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          UwbDevice.fromList(it)
+        }
+      }
+      133.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           VoidResult.fromList(it)
         }
@@ -229,16 +369,24 @@ private object UwbHostApiCodec : StandardMessageCodec() {
         stream.write(128)
         writeValue(stream, value.toList())
       }
-      is TokenPayload -> {
+      is DeviceCapabilities -> {
         stream.write(129)
         writeValue(stream, value.toList())
       }
-      is UwbDevice -> {
+      is RangingOptions -> {
         stream.write(130)
         writeValue(stream, value.toList())
       }
-      is VoidResult -> {
+      is TokenPayload -> {
         stream.write(131)
+        writeValue(stream, value.toList())
+      }
+      is UwbDevice -> {
+        stream.write(132)
+        writeValue(stream, value.toList())
+      }
+      is VoidResult -> {
+        stream.write(133)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -268,8 +416,14 @@ interface UwbHostApi {
    * On iOS the bytes are an `NSKeyedArchiver`-encoded `NIDiscoveryToken`.
    */
   fun getLocalToken(role: UwbRole, callback: (Result<TokenPayload>) -> Unit)
-  fun startRanging(deviceId: String, callback: (Result<VoidResult>) -> Unit)
+  fun startRanging(deviceId: String, options: RangingOptions, callback: (Result<VoidResult>) -> Unit)
   fun stopRanging(callback: (Result<VoidResult>) -> Unit)
+  /**
+   * Snapshot of the local UWB radio's capabilities. Returns the
+   * platform-specific profile (iOS-only fields are false on Android,
+   * Android-only fields are empty on iOS).
+   */
+  fun getDeviceCapabilities(callback: (Result<DeviceCapabilities>) -> Unit)
 
   companion object {
     /** The codec used by UwbHostApi. */
@@ -467,7 +621,8 @@ interface UwbHostApi {
           channel.setMessageHandler { message, reply ->
             val args = message as List<Any?>
             val deviceIdArg = args[0] as String
-            api.startRanging(deviceIdArg) { result: Result<VoidResult> ->
+            val optionsArg = args[1] as RangingOptions
+            api.startRanging(deviceIdArg, optionsArg) { result: Result<VoidResult> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(wrapError(error))
@@ -499,6 +654,24 @@ interface UwbHostApi {
           channel.setMessageHandler(null)
         }
       }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.getDeviceCapabilities", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            api.getDeviceCapabilities() { result: Result<DeviceCapabilities> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
     }
   }
 }
@@ -508,15 +681,20 @@ private object UwbFlutterApiCodec : StandardMessageCodec() {
     return when (type) {
       128.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          RangingSample.fromList(it)
+          RangingError.fromList(it)
         }
       }
       129.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          TokenPayload.fromList(it)
+          RangingSample.fromList(it)
         }
       }
       130.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          TokenPayload.fromList(it)
+        }
+      }
+      131.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           UwbDevice.fromList(it)
         }
@@ -526,16 +704,20 @@ private object UwbFlutterApiCodec : StandardMessageCodec() {
   }
   override fun writeValue(stream: ByteArrayOutputStream, value: Any?)   {
     when (value) {
-      is RangingSample -> {
+      is RangingError -> {
         stream.write(128)
         writeValue(stream, value.toList())
       }
-      is TokenPayload -> {
+      is RangingSample -> {
         stream.write(129)
         writeValue(stream, value.toList())
       }
-      is UwbDevice -> {
+      is TokenPayload -> {
         stream.write(130)
+        writeValue(stream, value.toList())
+      }
+      is UwbDevice -> {
+        stream.write(131)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -616,10 +798,10 @@ class UwbFlutterApi(private val binaryMessenger: BinaryMessenger) {
       } 
     }
   }
-  fun onRangingError(deviceIdArg: String, messageArg: String, callback: (Result<Unit>) -> Unit) {
+  fun onRangingError(deviceIdArg: String, errorArg: RangingError, callback: (Result<Unit>) -> Unit) {
     val channelName = "dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onRangingError"
     val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
-    channel.send(listOf(deviceIdArg, messageArg)) {
+    channel.send(listOf(deviceIdArg, errorArg)) {
       if (it is List<*>) {
         if (it.size > 1) {
           callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))

@@ -25,7 +25,6 @@ extension FlutterError: Error {}
 /// - `"accessory"`         → `IosAccessoryStrategy`
 ///   (`NINearbyAccessoryConfiguration` over Apple's FiRa accessory
 ///   BLE protocol).
-@available(iOS 14.0, *)
 final class UwbHostApiImpl: NSObject, UwbHostApi {
   private let flutterApi: UwbFlutterApi
 
@@ -66,25 +65,17 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     discovered.removeAll()
     peerTokens.removeAll()
     failPendingExchanges(with: PluginError.cancelled)
-    ble.start(accessoryProfiles: bleAccessoryProfiles())
+    ble.start(localName: localName, accessoryProfiles: bleAccessoryProfiles())
     peer.start(localName: localName)
     return VoidResult(ok: true)
   }
 
   func registerAccessoryProfile(profile: AccessoryProfile) throws -> VoidResult {
-    guard let svc = profile.serviceUuid,
-          let rx = profile.rxUuid,
-          let tx = profile.txUuid else {
-      return VoidResult(
-        ok: false,
-        error: "AccessoryProfile requires serviceUuid, rxUuid, and txUuid"
-      )
-    }
-    let key = svc.uppercased()
+    let key = profile.serviceUuid.uppercased()
     let bleProfile = BleOob.AccessoryProfile(
-      serviceUuid: CBUUID(string: svc),
-      rxUuid: CBUUID(string: rx),
-      txUuid: CBUUID(string: tx)
+      serviceUuid: CBUUID(string: profile.serviceUuid),
+      rxUuid: CBUUID(string: profile.rxUuid),
+      txUuid: CBUUID(string: profile.txUuid)
     )
     registeredProfiles[key] = RegisteredProfile(
       bleProfile: bleProfile,
@@ -117,7 +108,7 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     // Incoming requests on iOS only originate from `PeerOob`. The
     // accessory path has no symmetric "incoming request" concept —
     // accessories are discovered and connected to, not the reverse.
-    let token = myToken.bytes?.data ?? Data()
+    let token = myToken.bytes.data
     peer.accept(deviceId: deviceId, myToken: token)
     return VoidResult(ok: true)
   }
@@ -132,7 +123,7 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     myToken: TokenPayload,
     completion: @escaping (Result<TokenPayload, Error>) -> Void
   ) {
-    let token = myToken.bytes?.data ?? Data()
+    let token = myToken.bytes.data
     pendingExchanges[deviceId] = completion
     let onPeer: (Data) -> Void = { [weak self] bytes in
       guard let self = self else { return }
@@ -169,13 +160,9 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     completion(.success(false))
     return
     #else
-    let supported: Bool
-    if #available(iOS 16.0, *) {
-      supported = NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
-    } else {
-      supported = NISession.isSupported
-    }
-    completion(.success(supported))
+    completion(.success(
+      NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
+    ))
     #endif
   }
 
@@ -199,7 +186,13 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     }
   }
 
-  func startRanging(deviceId: String, completion: @escaping (Result<VoidResult, Error>) -> Void) {
+  func startRanging(
+    deviceId: String,
+    options: RangingOptions,
+    completion: @escaping (Result<VoidResult, Error>) -> Void
+  ) {
+    // `options` (cameraAssist / extendedDistance) is wired into the
+    // NI configurations downstream.
     activeStrategy?.stop()
     activeStrategy = nil
 
@@ -212,7 +205,7 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     }
 
     do {
-      let strategy = try makeStrategy(for: device)
+      let strategy = try makeStrategy(for: device, options: options)
       activeStrategy = strategy
       try strategy.start()
       completion(.success(VoidResult(ok: true)))
@@ -231,41 +224,75 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
   func stopRanging(completion: @escaping (Result<VoidResult, Error>) -> Void) {
     activeStrategy?.stop()
     activeStrategy = nil
+    // The strategy invalidated the underlying NISession (it shared the
+    // same instance as `localTokenSession`). NI sessions cannot be reused
+    // after `invalidate()`, so drop the cached reference — the next
+    // `getLocalToken` call must create a fresh one. Required for
+    // camera-assisted ranging: NI rejects -5883 InvalidARConfiguration if
+    // the session has already had `run()` called on it.
+    localTokenSession = nil
     completion(.success(VoidResult(ok: true)))
+  }
+
+  func getDeviceCapabilities(
+    completion: @escaping (Result<DeviceCapabilities, Error>) -> Void
+  ) {
+    let dc = NISession.deviceCapabilities
+    // `supportsExtendedDistanceMeasurement` only exists on iOS 17.4+.
+    let extendedDistance: Bool = {
+      if #available(iOS 17.0, *) {
+        return dc.supportsExtendedDistanceMeasurement
+      }
+      return false
+    }()
+    let caps = DeviceCapabilities(
+      supportsPreciseDistance: dc.supportsPreciseDistanceMeasurement,
+      supportsDirection: dc.supportsDirectionMeasurement,
+      supportsCameraAssist: dc.supportsCameraAssistance,
+      supportsExtendedDistance: extendedDistance,
+      // Channel/config-id introspection is Android-only; NI hides those.
+      supportedChannels: [],
+      supportedConfigIds: [],
+      minRangingIntervalMs: nil,
+      // Apple-side AoA is implicit when `supportsDirectionMeasurement`
+      // is true; we mirror it here for callers that key off `supportsAoa`.
+      supportsAoa: dc.supportsDirectionMeasurement
+    )
+    completion(.success(caps))
   }
 
   // MARK: - Helpers
 
-  private func makeStrategy(for device: UwbDevice) throws -> RangingStrategy {
-    switch device.platform ?? "ios" {
+  private func makeStrategy(
+    for device: UwbDevice,
+    options: RangingOptions
+  ) throws -> RangingStrategy {
+    let platform = device.platform
+    switch platform {
     case "ios", "android":
-      guard let bytes = peerTokens[device.id ?? ""] else {
+      guard let bytes = peerTokens[device.id] else {
         throw PluginError.transport(
-          "No peer token for \(device.id ?? "?"). "
+          "No peer token for \(device.id). "
             + "Run exchangeTokens (or acceptRequest) first."
         )
       }
       return IosPeerStrategy(
-        deviceId: device.id ?? "",
+        deviceId: device.id,
         peerTokenBytes: bytes,
         flutterApi: flutterApi,
+        cameraAssist: options.cameraAssist,
+        extendedDistance: options.extendedDistance,
         existingSession: localTokenSession
       )
-    case "accessory":
-      guard #available(iOS 15.0, *) else {
-        throw PluginError.transport(
-          "Accessory ranging requires iOS 15.0 or newer."
-        )
-      }
+    case let p where p == "accessory" || p.hasPrefix("accessory:"):
       return IosAccessoryStrategy(
-        deviceId: device.id ?? "",
+        deviceId: device.id,
         flutterApi: flutterApi,
-        ble: ble
+        ble: ble,
+        cameraAssist: options.cameraAssist
       )
     default:
-      throw PluginError.transport(
-        "Unknown peer platform: \(device.platform ?? "<nil>")"
-      )
+      throw PluginError.transport("Unknown peer platform: \(platform)")
     }
   }
 
@@ -295,12 +322,12 @@ enum PluginError: LocalizedError {
 
 // MARK: - BleOob.Callback / PeerOob.Callback
 
-@available(iOS 14.0, *)
 extension UwbHostApiImpl: BleOob.Callback, PeerOob.Callback {
   // MARK: PeerOob — iOS↔iOS peer discovery + token exchange
 
-  func onPeerDeviceFound(id: String, name: String) {
-    let device = UwbDevice(id: id, name: name, platform: "ios")
+  func onPeerDeviceFound(id: String, name: String, capability: UInt8) {
+    let platform = OobCapability.toIosPlatform(capability)
+    let device = UwbDevice(id: id, name: name, platform: platform)
     let isNew = discovered[id] == nil
     discovered[id] = device
     if isNew {
@@ -319,6 +346,7 @@ extension UwbHostApiImpl: BleOob.Callback, PeerOob.Callback {
   }
 
   func onIncomingRequest(id: String, name: String, peerToken: Data) {
+    // Incoming MPC requests only originate from same-OS iOS peers.
     let device = UwbDevice(id: id, name: name, platform: "ios")
     let isNew = discovered[id] == nil
     discovered[id] = device
@@ -352,7 +380,10 @@ extension UwbHostApiImpl: BleOob.Callback, PeerOob.Callback {
 
   func onError(_ message: String) {
     let id = activeStrategy?.deviceId ?? "ble"
-    flutterApi.onRangingError(deviceId: id, message: message) { _ in }
+    flutterApi.onRangingError(
+      deviceId: id,
+      error: RangingError(code: .transportError, message: message)
+    ) { _ in }
   }
 
   // MARK: BleOob — FiRa accessory discovery + GATT notifications
@@ -368,8 +399,17 @@ extension UwbHostApiImpl: BleOob.Callback, PeerOob.Callback {
     }
   }
 
+  func onSymmetricPeerFound(id: String, name: String, capability: UInt8) {
+    let platform = OobCapability.toIosPlatform(capability)
+    let device = UwbDevice(id: id, name: name, platform: platform)
+    let isNew = discovered[id] == nil
+    discovered[id] = device
+    if isNew {
+      flutterApi.onDeviceFound(device: device) { _ in }
+    }
+  }
+
   func onAccessoryNotify(id: String, bytes: Data) {
-    guard #available(iOS 15.0, *) else { return }
     guard let strategy = activeStrategy as? IosAccessoryStrategy,
           strategy.deviceId == id else {
       return

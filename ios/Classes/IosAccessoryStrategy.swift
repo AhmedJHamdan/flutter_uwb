@@ -1,3 +1,4 @@
+import ARKit
 import Flutter
 import Foundation
 import NearbyInteraction
@@ -26,14 +27,15 @@ import NearbyInteraction
 /// 7. `stop()` invalidates the session, writes `Stop` (0x0C), and disconnects.
 ///
 /// Requires iOS 15+; older devices fall back to peer-mode only.
-@available(iOS 15.0, *)
 final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
   let deviceId: String
 
   private let flutterApi: UwbFlutterApi
   private weak var ble: BleOob?
+  private let cameraAssist: Bool
 
   private var session: NISession?
+  private var arSession: ARSession?
   /// State machine for the multi-message handshake.
   private enum State {
     case idle
@@ -49,11 +51,13 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
   init(
     deviceId: String,
     flutterApi: UwbFlutterApi,
-    ble: BleOob
+    ble: BleOob,
+    cameraAssist: Bool = false
   ) {
     self.deviceId = deviceId
     self.flutterApi = flutterApi
     self.ble = ble
+    self.cameraAssist = cameraAssist
     super.init()
   }
 
@@ -78,6 +82,8 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
     session = nil
     if wasActive { writeMessage(.stop) }
     ble?.accessoryDisconnect(deviceId: deviceId)
+    arSession?.pause()
+    arSession = nil
     state = .idle
   }
 
@@ -95,9 +101,18 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
     case (.awaitingAccessoryConfig, .accessoryConfigurationData):
       do {
         let config = try NINearbyAccessoryConfiguration(data: payload)
+        if cameraAssist {
+          config.isCameraAssistanceEnabled = true
+        }
         let s = NISession()
         s.delegate = self
         self.session = s
+        if cameraAssist {
+          let ar = ARSession()
+          ar.run(ARWorldTrackingConfiguration())
+          arSession = ar
+          s.setARSession(ar)
+        }
         s.run(config)
       } catch {
         fail("NINearbyAccessoryConfiguration: \(error.localizedDescription)")
@@ -135,9 +150,10 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
     didUpdate nearbyObjects: [NINearbyObject]
   ) {
     for object in nearbyObjects {
-      flutterApi.onRangingSample(
-        sample: makeSample(deviceId: deviceId, object: object)
-      ) { _ in }
+      guard let sample = makeSample(deviceId: deviceId, object: object) else {
+        continue
+      }
+      flutterApi.onRangingSample(sample: sample) { _ in }
     }
   }
 
@@ -174,7 +190,7 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
   private func fail(_ message: String) {
     flutterApi.onRangingError(
       deviceId: deviceId,
-      message: message
+      error: RangingError(code: .sessionInitFailed, message: message)
     ) { _ in }
   }
 }

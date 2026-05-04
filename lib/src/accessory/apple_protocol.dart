@@ -104,10 +104,8 @@ sealed class AppleAccessoryMessage {
         _decodeEmpty(id, payload, const AccessoryUwbDidStop()),
       AppleAccessoryMessageId.initialize =>
         _decodeEmpty(id, payload, const Initialize()),
-      AppleAccessoryMessageId.configureAndStart =>
-        ConfigureAndStart(payload),
-      AppleAccessoryMessageId.stop =>
-        _decodeEmpty(id, payload, const Stop()),
+      AppleAccessoryMessageId.configureAndStart => ConfigureAndStart(payload),
+      AppleAccessoryMessageId.stop => _decodeEmpty(id, payload, const Stop()),
     };
   }
 
@@ -139,7 +137,7 @@ sealed class AppleAccessoryMessage {
 /// `NINearbyAccessoryConfiguration` data blob.
 final class AccessoryConfigurationData extends AppleAccessoryMessage {
   AccessoryConfigurationData(Uint8List configData)
-    : configData = Uint8List.fromList(configData);
+      : configData = Uint8List.fromList(configData);
 
   final Uint8List configData;
 
@@ -168,8 +166,7 @@ final class AccessoryUwbDidStop extends AppleAccessoryMessage {
   const AccessoryUwbDidStop();
 
   @override
-  AppleAccessoryMessageId get id =>
-      AppleAccessoryMessageId.accessoryUwbDidStop;
+  AppleAccessoryMessageId get id => AppleAccessoryMessageId.accessoryUwbDidStop;
 
   @override
   Uint8List encode() => _encodeIdOnly();
@@ -191,7 +188,7 @@ final class Initialize extends AppleAccessoryMessage {
 /// `NINearbyAccessoryConfiguration` shareable data and asks it to start.
 final class ConfigureAndStart extends AppleAccessoryMessage {
   ConfigureAndStart(Uint8List shareableConfigData)
-    : shareableConfigData = Uint8List.fromList(shareableConfigData);
+      : shareableConfigData = Uint8List.fromList(shareableConfigData);
 
   final Uint8List shareableConfigData;
 

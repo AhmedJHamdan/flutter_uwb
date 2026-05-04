@@ -4,10 +4,13 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import androidx.core.uwb.UwbAvailabilityCallback
 import androidx.core.uwb.UwbControleeSessionScope
 import androidx.core.uwb.UwbControllerSessionScope
 import androidx.core.uwb.UwbManager
+import java.util.concurrent.Executors
 import com.ahmedhamdan.flutter_uwb.oob.BleOob
+import com.ahmedhamdan.flutter_uwb.oob.OobCapability
 import com.ahmedhamdan.flutter_uwb.oob.TokenStore
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidControleeStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidPeerStrategy
@@ -61,11 +64,26 @@ class UwbHostApiImpl(
 
     private var activeStrategy: RangingStrategy? = null
 
+    /**
+     * Cached UWB availability, fed by [UwbAvailabilityCallback]. Surfaced
+     * to Dart through the session-state stream.
+     */
+    @Volatile private var lastKnownUwbAvailable: Boolean? = null
+    private val availabilityExecutor = Executors.newSingleThreadExecutor()
+    private val availabilityCallback = object : UwbAvailabilityCallback {
+        override fun onUwbStateChanged(isUwbAvailable: Boolean, reason: Int) {
+            lastKnownUwbAvailable = isUwbAvailable
+            Log.i(tag, "UWB availability=$isUwbAvailable reasonCode=$reason")
+        }
+    }
+    private var availabilityCallbackInstalled = false
+
     init {
         ble.setCallback(object : BleOob.Callback {
-            override fun onDeviceFound(id: String, name: String) {
+            override fun onDeviceFound(id: String, name: String, capability: Byte) {
                 val isNew = !discovered.containsKey(id)
-                val device = UwbDevice(id = id, name = name, platform = "android")
+                val platform = OobCapability.toAndroidPlatform(capability)
+                val device = UwbDevice(id = id, name = name, platform = platform)
                 discovered[id] = device
                 if (isNew) flutterApi.onDeviceFound(device) {}
             }
@@ -96,21 +114,39 @@ class UwbHostApiImpl(
                 bytes: ByteArray,
             ) {
                 // Surface the iPhone-host as a discovered "accessory:<tag>"
-                // device so the app can call startRanging against it.
+                // device so the app can call startRanging against it. The
+                // symmetric SVC means a cross-OS iOS peer that scan
+                // already labeled `accessory:ios`; don't downgrade it
+                // here.
+                val existing = discovered[id]
                 val key = serviceUuid.toString().uppercase()
-                val tag = registeredProfiles[key]?.vendorTag
-                val platform = if (tag != null) "accessory:$tag" else "accessory"
-                val isNew = !discovered.containsKey(id)
+                val vendorTag = registeredProfiles[key]?.vendorTag
+                val platform = when {
+                    existing?.platform != null
+                        && existing.platform!!.startsWith("accessory") ->
+                        existing.platform
+                    vendorTag != null -> "accessory:$vendorTag"
+                    else -> "accessory"
+                }
+                val isNew = existing == null
                 val device = UwbDevice(id = id, name = name, platform = platform)
                 discovered[id] = device
                 if (isNew) flutterApi.onDeviceFound(device) {}
 
-                // Route the bytes to the active controlee strategy if it
-                // matches this peer.
-                val s = activeStrategy as? AndroidControleeStrategy ?: return
-                if (s.deviceId == id) {
-                    mainScope.launch { s.handleAccessoryRequest(bytes) }
+                // Route the bytes to the active controlee strategy.
+                // iOS uses random resolvable private addresses that may
+                // not match the MAC the user originally tapped, so we
+                // re-target the strategy to whichever central is now
+                // driving the Apple-FiRa exchange.
+                val s = activeStrategy as? AndroidControleeStrategy ?: run {
+                    Log.w(this@UwbHostApiImpl.tag, "onAccessoryRequest: no active controlee strategy for $id")
+                    return
                 }
+                Log.i(this@UwbHostApiImpl.tag, "onAccessoryRequest dispatch from=$id strategyId=${s.deviceId}")
+                if (s.deviceId != id) {
+                    s.retarget(id)
+                }
+                mainScope.launch { s.handleAccessoryRequest(bytes) }
             }
         })
     }
@@ -235,14 +271,24 @@ class UwbHostApiImpl(
         mainScope.launch {
             val ok = try {
                 val mgr = uwbManager ?: UwbManager.createInstance(appContext).also { uwbManager = it }
-                // controleeSessionScope is the lighter-weight probe.
-                mgr.controleeSessionScope()
-                true
+                installAvailabilityCallbackOnce(mgr)
+                mgr.isAvailable()
             } catch (t: Throwable) {
                 Log.w(tag, "UWB probe failed: ${t.message}")
                 false
             }
+            lastKnownUwbAvailable = ok
             callback(Result.success(ok))
+        }
+    }
+
+    private fun installAvailabilityCallbackOnce(mgr: UwbManager) {
+        if (availabilityCallbackInstalled) return
+        try {
+            mgr.setUwbAvailabilityCallback(availabilityExecutor, availabilityCallback)
+            availabilityCallbackInstalled = true
+        } catch (t: Throwable) {
+            Log.w(tag, "setUwbAvailabilityCallback failed: ${t.message}")
         }
     }
 
@@ -295,7 +341,13 @@ class UwbHostApiImpl(
         }
     }
 
-    override fun startRanging(deviceId: String, callback: (Result<VoidResult>) -> Unit) {
+    override fun startRanging(
+        deviceId: String,
+        options: RangingOptions,
+        callback: (Result<VoidResult>) -> Unit,
+    ) {
+        // `options` (cameraAssist / extendedDistance) is wired through on
+        // iOS. Both flags are no-ops on Android.
         activeStrategy?.stop()
         activeStrategy = null
 
@@ -367,11 +419,12 @@ class UwbHostApiImpl(
                     uwbManager = mgr,
                     flutterApi = flutterApi,
                     rangingScope = mainScope,
+                    sessionKeyInfo = TokenStore.getSessionKey(id),
                 )
             }
             platform == "accessory" || platform.startsWith("accessory:") -> {
                 AndroidControleeStrategy(
-                    deviceId = id,
+                    initialDeviceId = id,
                     ble = ble,
                     uwbManager = mgr,
                     flutterApi = flutterApi,
@@ -382,11 +435,64 @@ class UwbHostApiImpl(
         }
     }
 
+    override fun getDeviceCapabilities(
+        callback: (Result<DeviceCapabilities>) -> Unit,
+    ) {
+        mainScope.launch {
+            try {
+                val mgr = uwbManager
+                    ?: UwbManager.createInstance(appContext).also { uwbManager = it }
+                val scope = controllerScope
+                    ?: mgr.controllerSessionScope().also { controllerScope = it }
+                val caps = scope.rangingCapabilities
+                callback(
+                    Result.success(
+                        DeviceCapabilities(
+                            supportsPreciseDistance = caps.isDistanceSupported,
+                            supportsDirection =
+                                caps.isAzimuthalAngleSupported || caps.isElevationAngleSupported,
+                            // iOS-only flags stay false on Android.
+                            supportsCameraAssist = false,
+                            supportsExtendedDistance = false,
+                            supportedChannels = caps.supportedChannels.map { it.toLong() },
+                            supportedConfigIds = caps.supportedConfigIds.map { it.toLong() },
+                            minRangingIntervalMs = caps.minRangingInterval.toLong(),
+                            supportsAoa = caps.isAzimuthalAngleSupported,
+                        ),
+                    ),
+                )
+            } catch (t: Throwable) {
+                Log.w(tag, "getDeviceCapabilities failed", t)
+                // Conservative fallback when the radio isn't available
+                // (emulator, no UWB feature, permission denied).
+                callback(
+                    Result.success(
+                        DeviceCapabilities(
+                            supportsPreciseDistance = false,
+                            supportsDirection = false,
+                            supportsCameraAssist = false,
+                            supportsExtendedDistance = false,
+                            supportedChannels = emptyList(),
+                            supportedConfigIds = emptyList(),
+                            minRangingIntervalMs = null,
+                            supportsAoa = false,
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
     fun dispose() {
         try { activeStrategy?.stop() } catch (_: Throwable) {}
         activeStrategy = null
         try { mainScope.cancel() } catch (_: Throwable) {}
         try { ble.stop() } catch (_: Throwable) {}
+        if (availabilityCallbackInstalled) {
+            try { uwbManager?.clearUwbAvailabilityCallback() } catch (_: Throwable) {}
+            availabilityCallbackInstalled = false
+        }
+        try { availabilityExecutor.shutdownNow() } catch (_: Throwable) {}
         discovered.clear()
         registeredProfiles.clear()
         TokenStore.clear()

@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Used to discover nearby phones for UWB ranging.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Used to assist UWB direction tracking when Camera assist is enabled.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_flutteruwb-uwb._tcp</string>

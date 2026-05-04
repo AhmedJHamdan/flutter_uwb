@@ -1,5 +1,100 @@
 # Changelog
 
+## 0.4.0
+
+**BREAKING release.** Closes the security gap on Android↔Android UWB
+ranging, fixes the silently-broken iOS↔Android peer-mode dispatch,
+brings the Android stack onto `androidx.core.uwb:1.0.0-rc01`, and
+tightens the Pigeon schema.
+
+> **Cross-OS (iPhone ↔ Android) is experimental in 0.4.0.** BLE
+> discovery, the Apple-FiRa accessory handshake, and Android UWB
+> session activation all complete, but the underlying
+> `androidx.core.uwb` API rejects the slot duration Apple selects, so
+> stable distance samples are not yet delivered. Same-OS pairs are
+> unaffected.
+
+### Added
+
+- **Provisioned STS for Android↔Android peer ranging.** Every BLE OOB
+  exchange now begins with an X25519 ECDH handshake (HKDF-SHA256
+  derivation of a 16-byte UWB session key + a 16-byte HMAC key). The
+  derived session key is fed into `RangingParameters.sessionKeyInfo`
+  so the UWB radio session is encrypted end-to-end. Token writes are
+  HMAC-authenticated; tampered or replayed tokens are rejected before
+  reaching the UWB stack.
+- `OobCapability` byte advertised in BLE service-data on Android and
+  in `MCNearbyServiceAdvertiser.discoveryInfo` on iOS so cross-OS
+  pairs auto-route to accessory mode and same-OS pairs stay on peer
+  mode without guessing. Peers running 0.3.x advertise no byte; on
+  Android scans of the symmetric service the absence is now treated
+  as `iosPeer` (iOS BLE strips service-data from advertisements, so
+  missing service-data unambiguously means an iOS host).
+- iOS now publishes the symmetric BLE service via
+  `CBPeripheralManager` and scans for it as a central, mirroring
+  Android's existing GATT setup. An iPhone shows up in an Android
+  device list as `accessory:ios` and a Galaxy in an iPhone list as
+  `accessory:android` automatically — no `registerAccessoryProfile`
+  boilerplate required for cross-OS pairs.
+- The Android GATT server now sniffs the first byte on the symmetric
+  `CHAR_WRITE` to dispatch a connecting central into either the
+  Apple-FiRa accessory protocol (Initialize/ConfigureAndStart/Stop)
+  or the ECDH peer-handshake path. Replies route back through the
+  shared `CHAR_NOTIFY`.
+- `RangingOptions` Pigeon struct on `startRanging` (`cameraAssist`,
+  `extendedDistance`).
+- `DeviceCapabilities` Pigeon struct + `getDeviceCapabilities()`
+  unifying `NIDeviceCapability` (iOS) and `RangingCapabilities`
+  (Android).
+- `UwbErrorCode` typed error code returned via the new
+  `RangingError(code, message)` event.
+- `Stream<UwbSessionState>` aggregate on the Dart facade.
+- `androidx.core.uwb:1.0.0-rc01` (was `1.0.0-alpha07`):
+  `UwbManager.isAvailable()`,
+  `subscribeToUwbAvailability(UwbAvailabilityCallback)`,
+  `RangingResultInitialized` / `RangingResultFailure(reasonCode)`.
+- `compileSdk` / `targetSdk` bumped to 35.
+- BLE OOB now requests an ATT MTU of 247 with a chunked-write
+  fallback (`BleFramer`) when the negotiation stays at the default
+  23-byte window.
+- Symmetric `incomingRequests` on Android — the Pigeon
+  `onIncomingRequest` now fires on both platforms (was iOS only).
+- `UwbHostApiImpl.dispose()` is wired through
+  `FlutterUwbPlugin.onDetachedFromEngine` (Android) and
+  `detachFromEngine` (iOS) so hot-restart no longer leaks BLE
+  resources.
+
+### Changed (BREAKING)
+
+- **0.4.0 peers cannot pair with 0.3.x peers over Android↔Android
+  BLE OOB.** The new ECDH+HMAC envelope is incompatible. 0.3.x peers
+  fail with a `transportError` event instead of silently hanging.
+- iOS↔Android pairs now auto-route to accessory mode. The discovered
+  `UwbDevice.platform` is `accessory:ios` (Android side) /
+  `accessory:android` (iOS side) instead of the previous symmetric
+  `peer` value that crashed on token parse.
+- Pigeon model fields go non-null where guaranteed (`UwbDevice.id`,
+  `name`, `platform`; `RangingSample.deviceId`, `distanceMeters`,
+  `elapsedRealtimeNanos`). Dart code that treated them as nullable
+  now sees analyzer warnings.
+- `void onRangingError(String deviceId, String message)` becomes
+  `void onRangingError(String deviceId, RangingError error)` with a
+  typed `UwbErrorCode`.
+- iOS minimum bumps to **iOS 16.0** (`flutter_uwb.podspec`,
+  `s.platform`). Hosts on iOS 14/15 must pin to 0.3.1.
+
+### Notes
+
+- `OobHandshake.swift` is published for wire-compatibility but is not
+  on any active code path in 0.4.0 — cross-OS pairs go through Apple's
+  FiRa accessory protocol whose STS material comes from `NISession`.
+- The Apple-FiRa accessory protocol decoder
+  (`AppleProtocol.parseAppleUWBConfigData`) reads the iPhone-emitted
+  30-byte `AppleUWBConfigData` payload (session id, channel, preamble,
+  6-byte STS IV, peer short address). The byte layout is pinned by
+  golden fixtures captured from a real iPhone, stored under
+  `android/src/test/resources/apple_protocol/`.
+
 ## 0.3.1
 
 ### Added
@@ -84,9 +179,6 @@ context.
 - `pairWith(String deviceId, {UwbRole role})` — convenience method that
   combines `getLocalToken` + `exchangeTokens` in a single call.
 
-See [`doc/migration-v2-to-v3.md`](doc/migration-v2-to-v3.md) for the
-full migration guide.
-
 ## 0.2.0+1
 
 Cross-platform v2: a single BLE GATT transport on both platforms plus
@@ -144,12 +236,12 @@ plan around them)
 
 - iPhone↔iPhone BLE pairing: code complete + sim runtime smoke OK; not
   yet exercised on a real two-iPhone setup.
-- iPhone↔Android cross-platform: code complete; FiRa byte layout for
-  `AccessoryConfigurationData` and the shareable portion of
-  `ConfigureAndStart` carries `TODO(verify)` markers pending validation
-  against an iPhone + Pixel-7-Pro-class pairing.
-- Android↔accessory: same gating — needs a FiRa-compliant accessory
-  with a known service UUID set.
+- iPhone↔Android cross-platform: BLE handshake and Android UWB session
+  activation work end-to-end; stable distance samples are blocked by
+  `androidx.core.uwb` slot-duration constraints (see the experimental
+  note above).
+- Android↔accessory: needs a FiRa-compliant accessory with a known
+  service UUID set.
 
 ## 0.1.0
 
