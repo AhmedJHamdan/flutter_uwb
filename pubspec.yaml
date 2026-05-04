@@ -1,6 +1,6 @@
 name: flutter_uwb
 description: Ultra-wideband proximity for Flutter — cm-level distance, real-time ranging, Precision Find.
-version: 0.4.0
+version: 0.4.1
 homepage: https://github.com/AhmedJHamdan/flutter_uwb
 repository: https://github.com/AhmedJHamdan/flutter_uwb
 issue_tracker: https://github.com/AhmedJHamdan/flutter_uwb/issues

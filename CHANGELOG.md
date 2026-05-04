@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- Shrink the brand shields-style badge SVG to 137×20 (was 220×32) so
+  it lines up vertically with the flat-square shields.io badges next
+  to it on the README hero. Asset content unchanged — only the outer
+  `<svg>` width/height; viewBox preserves the layout. No code changes.
+
 ## 0.4.0
 
 **BREAKING release.** Closes the security gap on Android↔Android UWB

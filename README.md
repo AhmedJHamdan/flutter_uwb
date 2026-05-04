@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/brand/badges/flutter_uwb_badge_shields.svg" alt="flutter_uwb" height="20"/>
+  <img src="assets/brand/badges/flutter_uwb_badge_shields.svg" alt="flutter_uwb"/>
   <a href="https://pub.dev/packages/flutter_uwb"><img src="https://img.shields.io/pub/v/flutter_uwb?color=00E5FF&labelColor=0A0E21&style=flat-square" alt="pub.dev"/></a>
   <a href="https://pub.dev/packages/flutter_uwb/score"><img src="https://img.shields.io/pub/points/flutter_uwb?color=00E5FF&labelColor=0A0E21&style=flat-square" alt="pub.dev points"/></a>
   <img src="https://img.shields.io/badge/platforms-iOS%20%7C%20Android-02569B?style=flat-square&labelColor=0A0E21" alt="platforms"/>
