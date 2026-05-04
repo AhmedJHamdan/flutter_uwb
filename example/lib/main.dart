@@ -3,7 +3,6 @@ import 'dart:io' show Platform;
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_uwb/flutter_uwb.dart';
 
 import 'brand.dart';
@@ -399,8 +398,6 @@ class _HomeState extends State<_Home> {
                   style: TextStyle(color: Colors.redAccent.shade100),
                 ),
               ],
-              const SizedBox(height: 24),
-              const _PoweredByFooter(),
             ],
           ),
         ),
@@ -504,21 +501,6 @@ class _PeerTile extends StatelessWidget {
               ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _PoweredByFooter extends StatelessWidget {
-  const _PoweredByFooter();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: SvgPicture.asset(
-        '../assets/brand/badges/flutter_uwb_badge_solid.svg',
-        height: 24,
-        semanticsLabel: 'Powered by flutter_uwb',
       ),
     );
   }

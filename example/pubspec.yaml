@@ -14,7 +14,6 @@ dependencies:
 
   cupertino_icons: ^1.0.8
   google_fonts: ^6.2.1
-  flutter_svg: ^2.0.10
 
 dev_dependencies:
   integration_test:
@@ -37,7 +36,3 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
-
-  assets:
-    - ../assets/brand/flutter_uwb_pulse.svg
-    - ../assets/brand/badges/flutter_uwb_badge_solid.svg
