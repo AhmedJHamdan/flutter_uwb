@@ -10,10 +10,6 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-6B7392?style=flat-square&labelColor=0A0E21" alt="license"/></a>
 </p>
 
-<p align="center">
-  <img src="assets/brand/flutter_uwb_screenshot.png" alt="flutter_uwb in action" width="320"/>
-</p>
-
 ## <img src="assets/brand/flutter_uwb_pulse.svg" width="20" align="left"/> Features
 
 - **Distance + direction** — sub-10 cm distance and azimuth/elevation when the hardware supports it.
@@ -161,6 +157,10 @@ The Bonjour service names must match exactly. If you only target Android peers o
 ## Example app
 
 A runnable cross-platform demo lives in [`example/`](example/). It wires up discovery, pairing, and a live distance/azimuth readout for both same-OS and cross-OS pairs.
+
+<p align="center">
+  <img src="assets/brand/flutter_uwb_screenshot.png" alt="flutter_uwb example app" width="320"/>
+</p>
 
 ## Architecture
 
