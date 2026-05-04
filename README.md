@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="assets/brand/flutter_uwb_banner.png" alt="flutter_uwb — Ultra-wideband proximity for Flutter" width="100%"/>
+  <img src="assets/brand/flutter_uwb_banner.png" alt="flutter_uwb — Ultra-wideband proximity for Flutter" width="900"/>
 </p>
 
 <p align="center">
-  <img src="assets/brand/badges/flutter_uwb_badge_shields.svg" alt="flutter_uwb"/>
+  <img src="assets/brand/badges/flutter_uwb_badge_shields.svg" alt="flutter_uwb" height="20"/>
   <a href="https://pub.dev/packages/flutter_uwb"><img src="https://img.shields.io/pub/v/flutter_uwb?color=00E5FF&labelColor=0A0E21&style=flat-square" alt="pub.dev"/></a>
   <a href="https://pub.dev/packages/flutter_uwb/score"><img src="https://img.shields.io/pub/points/flutter_uwb?color=00E5FF&labelColor=0A0E21&style=flat-square" alt="pub.dev points"/></a>
   <img src="https://img.shields.io/badge/platforms-iOS%20%7C%20Android-02569B?style=flat-square&labelColor=0A0E21" alt="platforms"/>
@@ -11,11 +11,7 @@
 </p>
 
 <p align="center">
-  <b>Ultra-wideband proximity for Flutter — cm-level distance, real-time ranging, Precision Find.</b>
-</p>
-
-<p align="center">
-  <img src="assets/brand/flutter_uwb_screenshot.png" alt="flutter_uwb in action" width="480"/>
+  <img src="assets/brand/flutter_uwb_screenshot.png" alt="flutter_uwb in action" width="320"/>
 </p>
 
 ## <img src="assets/brand/flutter_uwb_pulse.svg" width="20" align="left"/> Features
