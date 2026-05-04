@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="220" height="32" viewBox="0 0 220 32" role="img" aria-label="flutter_uwb · UWB">
+  <title>flutter_uwb · UWB</title>
+  <rect x="0" y="0" width="148" height="32" rx="6" fill="#0A0E21"></rect>
+  <rect x="140" y="0" width="80" height="32" rx="6" fill="#02569B"></rect>
+  <rect x="140" y="0" width="8" height="32" fill="#0A0E21"></rect>
+  <g transform="translate(16, 16)" fill="none">
+    <circle cx="0" cy="0" r="9" stroke="#02569B" stroke-width="1.6"></circle>
+    <circle cx="0" cy="0" r="5.5" stroke="#00E5FF" stroke-width="1.6"></circle>
+    <circle cx="0" cy="0" r="2" fill="#00E5FF"></circle>
+  </g>
+  <text x="36" y="21" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#E6ECFF" letter-spacing="-0.2">flutter<tspan fill="#00E5FF">_</tspan>uwb</text>
+  <text x="180" y="21" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF" letter-spacing="2">UWB</text>
+</svg>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" width="512" height="512" role="img" aria-label="flutter_uwb">
+  <title>flutter_uwb</title>
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00E5FF" stop-opacity="0.35"></stop>
+      <stop offset="60%" stop-color="#00E5FF" stop-opacity="0"></stop>
+    </radialGradient>
+  </defs>
+  
+  <rect width="320" height="320" fill="#0A0E21"></rect>
+  
+  <circle cx="160" cy="160" r="80" fill="url(#glow)"></circle>
+  
+  <g fill="none">
+    <circle cx="160" cy="160" r="120" stroke="#02569B" stroke-width="2"></circle>
+    <circle cx="160" cy="160" r="84" stroke="#02569B" stroke-width="2" stroke-opacity="0.85"></circle>
+    <circle cx="160" cy="160" r="48" stroke="#00E5FF" stroke-width="2.5"></circle>
+  </g>
+  
+  <circle cx="160" cy="160" r="10" fill="#00E5FF"></circle>
+  <circle cx="160" cy="160" r="4" fill="#0A0E21"></circle>
+</svg>
