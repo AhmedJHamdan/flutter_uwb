@@ -34,8 +34,10 @@ class FlutterUwb {
     UwbFlutterApi.setup(_FlutterApiHandler(this));
   }
 
-  /// Default singleton.
-  static final FlutterUwb instance = FlutterUwb._();
+  static FlutterUwb? _instance;
+
+  /// Default singleton. Re-created lazily after [dispose].
+  static FlutterUwb get instance => _instance ??= FlutterUwb._();
 
   final UwbHostApi _api = UwbHostApi();
 
@@ -51,6 +53,11 @@ class FlutterUwb {
       StreamController<RangingErrorEvent>.broadcast();
   final StreamController<IncomingRequest> _incomingRequests =
       StreamController<IncomingRequest>.broadcast();
+
+  bool _disposed = false;
+
+  /// `true` once [dispose] has been called on this instance.
+  bool get isDisposed => _disposed;
 
   /// Devices observed via OOB discovery, fired once per peer the first time
   /// it is seen.
@@ -222,6 +229,30 @@ class FlutterUwb {
   ///
   /// Throws [UwbException] on failure.
   Future<void> stopRanging() async => _check(await _api.stopRanging());
+
+  /// Tear down the plugin's Dart-side resources: closes all broadcast
+  /// streams and detaches the Pigeon flutter-api handler.
+  ///
+  /// Call this when the host app is shutting down or on hot reload to
+  /// avoid leaking stream controllers across reload cycles. After
+  /// [dispose] returns, the static [instance] getter will mint a fresh
+  /// [FlutterUwb] on next access.
+  ///
+  /// Idempotent — calling [dispose] twice is a no-op.
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    UwbFlutterApi.setup(null);
+    await Future.wait<void>([
+      _deviceFound.close(),
+      _deviceLost.close(),
+      _samples.close(),
+      _peerLost.close(),
+      _errors.close(),
+      _incomingRequests.close(),
+    ]);
+    if (identical(FlutterUwb._instance, this)) FlutterUwb._instance = null;
+  }
 }
 
 /// Carries a platform error raised inside an active ranging session.
@@ -244,31 +275,37 @@ class _FlutterApiHandler extends UwbFlutterApi {
 
   @override
   void onDeviceFound(UwbDevice device) {
+    if (parent._disposed) return;
     parent._deviceFound.add(device);
   }
 
   @override
   void onDeviceLost(String deviceId) {
+    if (parent._disposed) return;
     parent._deviceLost.add(deviceId);
   }
 
   @override
   void onRangingSample(RangingSample sample) {
+    if (parent._disposed) return;
     parent._samples.add(sample);
   }
 
   @override
   void onPeerLost(String deviceId) {
+    if (parent._disposed) return;
     parent._peerLost.add(deviceId);
   }
 
   @override
   void onRangingError(String deviceId, RangingError error) {
+    if (parent._disposed) return;
     parent._errors.add(RangingErrorEvent(deviceId, error.code, error.message));
   }
 
   @override
   void onIncomingRequest(UwbDevice device, TokenPayload peerToken) {
+    if (parent._disposed) return;
     parent._incomingRequests.add(IncomingRequest(device, peerToken.bytes));
   }
 }
@@ -285,38 +322,40 @@ class IncomingRequest {
 }
 
 // -------- Backwards-compatible top-level functions --------
-final FlutterUwb _instance = FlutterUwb.instance;
+// Each call resolves through the static getter so dispose() / hot reload
+// transparently swap the underlying instance.
 
 Future<void> startDiscovery(String localName) =>
-    _instance.startDiscovery(localName);
-Future<void> stopDiscovery() => _instance.stopDiscovery();
-Future<List<UwbDevice>> getDiscovered() => _instance.getDiscovered();
+    FlutterUwb.instance.startDiscovery(localName);
+Future<void> stopDiscovery() => FlutterUwb.instance.stopDiscovery();
+Future<List<UwbDevice>> getDiscovered() => FlutterUwb.instance.getDiscovered();
 Future<void> acceptRequest(String deviceId, Uint8List myToken) =>
-    _instance.acceptRequest(deviceId, myToken);
+    FlutterUwb.instance.acceptRequest(deviceId, myToken);
 Future<void> declineRequest(String deviceId) =>
-    _instance.declineRequest(deviceId);
+    FlutterUwb.instance.declineRequest(deviceId);
 Future<void> registerAccessoryProfile({
   required String serviceUuid,
   required String rxUuid,
   required String txUuid,
   String? vendorTag,
 }) =>
-    _instance.registerAccessoryProfile(
+    FlutterUwb.instance.registerAccessoryProfile(
       serviceUuid: serviceUuid,
       rxUuid: rxUuid,
       txUuid: txUuid,
       vendorTag: vendorTag,
     );
 Future<void> unregisterAccessoryProfile(String serviceUuid) =>
-    _instance.unregisterAccessoryProfile(serviceUuid);
+    FlutterUwb.instance.unregisterAccessoryProfile(serviceUuid);
 Future<Uint8List> exchangeTokens(String deviceId, Uint8List myToken) =>
-    _instance.exchangeTokens(deviceId, myToken);
-Future<bool> isUwbAvailable() => _instance.isUwbAvailable();
-Future<Uint8List> getLocalToken(UwbRole role) => _instance.getLocalToken(role);
+    FlutterUwb.instance.exchangeTokens(deviceId, myToken);
+Future<bool> isUwbAvailable() => FlutterUwb.instance.isUwbAvailable();
+Future<Uint8List> getLocalToken(UwbRole role) =>
+    FlutterUwb.instance.getLocalToken(role);
 Future<void> pairWith(String deviceId, {UwbRole role = UwbRole.controller}) =>
-    _instance.pairWith(deviceId, role: role);
+    FlutterUwb.instance.pairWith(deviceId, role: role);
 Future<void> startRanging(String deviceId, {RangingOptions? options}) =>
-    _instance.startRanging(deviceId, options: options);
+    FlutterUwb.instance.startRanging(deviceId, options: options);
 Future<DeviceCapabilities> getDeviceCapabilities() =>
-    _instance.getDeviceCapabilities();
-Future<void> stopRanging() => _instance.stopRanging();
+    FlutterUwb.instance.getDeviceCapabilities();
+Future<void> stopRanging() => FlutterUwb.instance.stopRanging();
