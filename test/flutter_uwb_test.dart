@@ -165,6 +165,49 @@ void main() {
       await sub.cancel();
     });
 
+    test('getLocalToken throws UwbException(sessionInitFailed) on empty token',
+        () async {
+      const codec = pigeon.UwbHostApi.pigeonChannelCodec;
+      binaryMessenger.setMockMessageHandler(_hostChan('getLocalToken'),
+          (ByteData? message) async {
+        return codec.encodeMessage(<Object?>[
+          pigeon.TokenPayload(bytes: Uint8List(0)),
+        ]);
+      });
+      try {
+        await FlutterUwb.instance.getLocalToken(UwbRole.controller);
+        fail('expected UwbException');
+      } on UwbException catch (e) {
+        expect(e.code, UwbErrorCode.sessionInitFailed);
+        expect(e.message, contains('empty token'));
+        expect(e.toString(), contains('sessionInitFailed'));
+      }
+    });
+
+    test('exchangeTokens throws UwbException(transportError) on empty payload',
+        () async {
+      const codec = pigeon.UwbHostApi.pigeonChannelCodec;
+      binaryMessenger.setMockMessageHandler(_hostChan('exchangeTokens'),
+          (ByteData? message) async {
+        return codec.encodeMessage(<Object?>[
+          pigeon.TokenPayload(bytes: Uint8List(0)),
+        ]);
+      });
+      try {
+        await FlutterUwb.instance
+            .exchangeTokens('peer', Uint8List.fromList([1]));
+        fail('expected UwbException');
+      } on UwbException catch (e) {
+        expect(e.code, UwbErrorCode.transportError);
+      }
+    });
+
+    test('UwbException toString omits code section when null', () {
+      const e = UwbException('boom');
+      expect(e.code, isNull);
+      expect(e.toString(), 'UwbException: boom');
+    });
+
     test('getLocalToken returns bytes for both roles', () async {
       const codec = pigeon.UwbHostApi.pigeonChannelCodec;
       final canned = Uint8List.fromList(List<int>.generate(9, (i) => i));

@@ -16,13 +16,33 @@ export 'src/pigeon/uwb.g.dart'
         UwbRole;
 
 /// Thrown by [FlutterUwb] when a platform operation fails.
+///
+/// [code] carries a stable error category callers can branch on:
+///
+/// ```dart
+/// try {
+///   await uwb.startRanging(deviceId);
+/// } on UwbException catch (e) {
+///   if (e.code == UwbErrorCode.permissionDenied) { ... }
+/// }
+/// ```
+///
+/// `null` means the error came from a path that does not yet carry a
+/// typed code on the wire; inspect [message] in that case.
 class UwbException implements Exception {
-  const UwbException(this.message);
+  const UwbException(this.message, {this.code});
 
+  /// Stable error category, or `null` when the underlying call did not
+  /// classify the failure.
+  final UwbErrorCode? code;
+
+  /// Human-readable description from the platform.
   final String message;
 
   @override
-  String toString() => 'UwbException: $message';
+  String toString() => code == null
+      ? 'UwbException: $message'
+      : 'UwbException(${code!.name}): $message';
 }
 
 /// Public Dart facade for the flutter_uwb plugin.
@@ -158,7 +178,10 @@ class FlutterUwb {
       TokenPayload(bytes: myToken),
     );
     if (out.bytes.isEmpty) {
-      throw const UwbException('exchangeTokens: platform returned empty token');
+      throw const UwbException(
+        'exchangeTokens: platform returned empty token',
+        code: UwbErrorCode.transportError,
+      );
     }
     return out.bytes;
   }
@@ -178,7 +201,10 @@ class FlutterUwb {
   Future<Uint8List> getLocalToken(UwbRole role) async {
     final t = await _api.getLocalToken(role);
     if (t.bytes.isEmpty) {
-      throw const UwbException('getLocalToken: platform returned empty token');
+      throw const UwbException(
+        'getLocalToken: platform returned empty token',
+        code: UwbErrorCode.sessionInitFailed,
+      );
     }
     return t.bytes;
   }

@@ -65,12 +65,50 @@ enum class UwbRole(val raw: Int) {
  * Android; `NIError.Code` / `CBError.Code` on iOS) onto these values.
  */
 enum class UwbErrorCode(val raw: Int) {
+  /**
+   * The OS denied a permission the plugin needs (Bluetooth scan/connect/
+   * advertise, fine location on Android < 12, Nearby Interaction or camera
+   * usage on iOS). Recover by requesting the missing permission and
+   * retrying — the rest of the plugin state is unchanged.
+   */
   PERMISSIONDENIED(0),
+  /**
+   * The UWB radio is present but disabled or unavailable (airplane mode,
+   * hardware fault, OS-level toggle). Surface a "turn UWB on" prompt to
+   * the user; nothing the plugin can do programmatically.
+   */
   UWBDISABLED(1),
+  /**
+   * The peer dropped during ranging (out of range, BLE link lost, app on
+   * the other side closed). The session is torn down before this fires;
+   * the only recovery is rediscovery and re-pair.
+   */
   PEERLOST(2),
+  /**
+   * UWB use is restricted in the device's current region (Russia,
+   * Indonesia, and a small number of other jurisdictions disable the
+   * radio entirely). Not user-recoverable; surface a region-restriction
+   * notice.
+   */
   REGIONALRESTRICTION(3),
+  /**
+   * The platform refused to start the UWB session (invalid token,
+   * channel/preamble mismatch, unsupported config). Usually indicates the
+   * peers disagreed on session parameters; re-pair before retrying.
+   */
   SESSIONINITFAILED(4),
+  /**
+   * The OOB transport (BLE GATT) failed during a critical exchange —
+   * connection drop mid-handshake, characteristic write failure, GATT
+   * timeout. Retry the operation; if it persists, BLE on one side is in
+   * a bad state.
+   */
   TRANSPORTERROR(5),
+  /**
+   * Catch-all for platform errors the plugin couldn't classify. The
+   * `message` field on [RangingError] / [UwbException] carries the
+   * underlying platform string for debugging.
+   */
   UNKNOWN(6);
 
   companion object {
