@@ -16,6 +16,16 @@ jobs:
           channel: stable
           cache: true
       - run: flutter --version
+      - name: Check pubspec ↔ podspec version parity
+        run: |
+          pub_version=$(awk '/^version:/ {print $2}' pubspec.yaml)
+          pod_version=$(awk "/^[[:space:]]*s\\.version[[:space:]]*=/ {gsub(/['\"']/, \"\", \$3); print \$3}" ios/flutter_uwb.podspec)
+          echo "pubspec: $pub_version"
+          echo "podspec: $pod_version"
+          if [ "$pub_version" != "$pod_version" ]; then
+            echo "::error::pubspec version ($pub_version) does not match podspec version ($pod_version)"
+            exit 1
+          fi
       - run: flutter pub get
       - run: dart format --output=none --set-exit-if-changed .
       - run: flutter analyze
