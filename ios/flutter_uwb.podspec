@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'flutter_uwb'
-  s.version          = '0.3.1'
+  s.version          = '0.4.1'
   s.summary          = 'Cross-OS BLE OOB + UWB ranging (Android Jetpack UWB, iOS Nearby Interaction).'
   s.description      = <<-DESC
 A Flutter plugin for Ultra-Wideband (UWB) precise ranging. Both platforms use
