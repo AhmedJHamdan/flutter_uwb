@@ -297,6 +297,69 @@ struct DeviceCapabilities {
   }
 }
 
+/// Snapshot of everything the plugin needs to start ranging.
+///
+/// Returned by [UwbHostApi.checkReadiness]. The host app should branch
+/// on each field and surface the appropriate UI:
+///
+/// ```dart
+/// final r = await uwb.checkReadiness();
+/// if (!r.bluetoothEnabled) promptEnableBluetooth();
+/// else if (!r.permissionsGranted) requestPermissions(r.missingPermissions);
+/// else if (!r.uwbAvailable) showUnsupportedScreen();
+/// else readyToRange();
+/// ```
+///
+/// Generated class from Pigeon that represents data sent in messages.
+struct UwbReadiness {
+  /// `true` if the device has a UWB radio and the OS allows ranging.
+  /// Mirrors [UwbHostApi.isUwbAvailable] — false on the iOS simulator and
+  /// on devices without UWB hardware.
+  var uwbAvailable: Bool
+  /// `true` if the system Bluetooth radio is powered on. Required for
+  /// OOB discovery / pairing on both platforms.
+  var bluetoothEnabled: Bool
+  /// `true` if every runtime permission the plugin needs has been
+  /// granted. Always `true` on iOS — iOS does not expose a programmatic
+  /// pre-check for `NSBluetoothAlwaysUsageDescription` /
+  /// `NSNearbyInteractionUsageDescription`; the OS prompts on first use.
+  var permissionsGranted: Bool
+  /// Android permission identifiers (`android.permission.*`) the plugin
+  /// needs but the user has not granted yet. Empty on iOS. Pass these
+  /// directly to your permission package — for example with
+  /// `permission_handler`:
+  ///
+  /// ```dart
+  /// final perms = r.missingPermissions
+  ///     .map(Permission.byValue)
+  ///     .toList();
+  /// await perms.request();
+  /// ```
+  var missingPermissions: [String?]
+
+  static func fromList(_ list: [Any?]) -> UwbReadiness? {
+    let uwbAvailable = list[0] as! Bool
+    let bluetoothEnabled = list[1] as! Bool
+    let permissionsGranted = list[2] as! Bool
+    let missingPermissions = list[3] as! [String?]
+
+    return UwbReadiness(
+      uwbAvailable: uwbAvailable,
+      bluetoothEnabled: bluetoothEnabled,
+      permissionsGranted: permissionsGranted,
+      missingPermissions: missingPermissions
+    )
+  }
+  func toList() -> [Any?] {
+    return [
+      uwbAvailable,
+      bluetoothEnabled,
+      permissionsGranted,
+      missingPermissions,
+    ]
+  }
+}
+
 /// Generated class from Pigeon that represents data sent in messages.
 struct RangingSample {
   var deviceId: String
@@ -345,6 +408,8 @@ private class UwbHostApiCodecReader: FlutterStandardReader {
       case 132:
         return UwbDevice.fromList(self.readValue() as! [Any?])
       case 133:
+        return UwbReadiness.fromList(self.readValue() as! [Any?])
+      case 134:
         return VoidResult.fromList(self.readValue() as! [Any?])
       default:
         return super.readValue(ofType: type)
@@ -369,8 +434,11 @@ private class UwbHostApiCodecWriter: FlutterStandardWriter {
     } else if let value = value as? UwbDevice {
       super.writeByte(132)
       super.writeValue(value.toList())
-    } else if let value = value as? VoidResult {
+    } else if let value = value as? UwbReadiness {
       super.writeByte(133)
+      super.writeValue(value.toList())
+    } else if let value = value as? VoidResult {
+      super.writeByte(134)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -418,6 +486,11 @@ protocol UwbHostApi {
   /// platform-specific profile (iOS-only fields are false on Android,
   /// Android-only fields are empty on iOS).
   func getDeviceCapabilities(completion: @escaping (Result<DeviceCapabilities, Error>) -> Void)
+  /// One-shot check of everything the plugin needs to start ranging:
+  /// UWB hardware, Bluetooth state, runtime permissions. The host app
+  /// uses this to drive its onboarding flow before calling
+  /// [startDiscovery] / [startRanging].
+  func checkReadiness(completion: @escaping (Result<UwbReadiness, Error>) -> Void)
 }
 
 /// Generated setup class from Pigeon to handle messages through the `binaryMessenger`.
@@ -636,6 +709,25 @@ class UwbHostApiSetup {
       }
     } else {
       getDeviceCapabilitiesChannel.setMessageHandler(nil)
+    }
+    /// One-shot check of everything the plugin needs to start ranging:
+    /// UWB hardware, Bluetooth state, runtime permissions. The host app
+    /// uses this to drive its onboarding flow before calling
+    /// [startDiscovery] / [startRanging].
+    let checkReadinessChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.flutter_uwb.UwbHostApi.checkReadiness", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      checkReadinessChannel.setMessageHandler { _, reply in
+        api.checkReadiness() { result in
+          switch result {
+            case .success(let res):
+              reply(wrapResult(res))
+            case .failure(let error):
+              reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      checkReadinessChannel.setMessageHandler(nil)
     }
   }
 }

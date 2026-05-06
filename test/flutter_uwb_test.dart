@@ -31,6 +31,7 @@ void main() {
       'stopRanging',
       'registerAccessoryProfile',
       'unregisterAccessoryProfile',
+      'checkReadiness',
     ]) {
       binaryMessenger.setMockMessageHandler(_hostChan(m), null);
     }
@@ -206,6 +207,36 @@ void main() {
       const e = UwbException('boom');
       expect(e.code, isNull);
       expect(e.toString(), 'UwbException: boom');
+    });
+
+    test('checkReadiness decodes a UwbReadiness payload', () async {
+      const codec = pigeon.UwbHostApi.pigeonChannelCodec;
+      binaryMessenger.setMockMessageHandler(_hostChan('checkReadiness'),
+          (ByteData? message) async {
+        return codec.encodeMessage(<Object?>[
+          pigeon.UwbReadiness(
+            uwbAvailable: false,
+            bluetoothEnabled: true,
+            permissionsGranted: false,
+            missingPermissions: const [
+              'android.permission.BLUETOOTH_SCAN',
+              'android.permission.UWB_RANGING',
+            ],
+          ),
+        ]);
+      });
+      final r = await FlutterUwb.instance.checkReadiness();
+      expect(r.uwbAvailable, isFalse);
+      expect(r.bluetoothEnabled, isTrue);
+      expect(r.permissionsGranted, isFalse);
+      expect(r.missingPermissions, hasLength(2));
+      expect(
+        r.missingPermissions,
+        containsAll(<String?>[
+          'android.permission.BLUETOOTH_SCAN',
+          'android.permission.UWB_RANGING',
+        ]),
+      );
     });
 
     test('getLocalToken returns bytes for both roles', () async {

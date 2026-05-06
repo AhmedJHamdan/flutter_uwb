@@ -121,6 +121,17 @@ final class BleOob: NSObject {
   private(set) var started = false
   private var wantsScan = false
 
+  /// `true` when the system Bluetooth radio is currently `.poweredOn`.
+  /// Read by `UwbHostApiImpl.checkReadiness` to surface a "turn on
+  /// Bluetooth" hint to the host app.
+  ///
+  /// Returns `false` when the central manager has not been instantiated
+  /// yet — instantiating it here would trigger the OS Bluetooth-usage
+  /// prompt, which we don't want to do on a passive readiness check.
+  var isPoweredOn: Bool {
+    return central?.state == .poweredOn
+  }
+
   /// Configured accessory profiles. Forms the scan filter (in addition
   /// to the symmetric service UUID, which is always scanned for).
   private var accessoryProfiles: [AccessoryProfile] = []
