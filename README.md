@@ -162,6 +162,58 @@ A runnable cross-platform demo lives in [`example/`](example/). It wires up disc
   <img src="assets/brand/flutter_uwb_screenshot.png" alt="flutter_uwb example app" width="320"/>
 </p>
 
+## Troubleshooting
+
+<details>
+<summary><b><code>startDiscovery</code> succeeds on Android but no peers appear</b></summary>
+
+Almost always missing runtime permissions. Android 12+ requires the user to grant `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE` and `UWB_RANGING` at runtime — declaring them in the manifest is not enough. Use [`uwb.checkReadiness()`](#api) and request anything in `missingPermissions` (typically with [`permission_handler`](https://pub.dev/packages/permission_handler)) before calling `startDiscovery`.
+
+If permissions are granted and you still see nothing, check that Bluetooth is actually powered on (`r.bluetoothEnabled`) and that the peer is also running 0.4.x — 0.4.x peers cannot pair with 0.3.x peers (see [`MIGRATION.md`](MIGRATION.md)).
+</details>
+
+<details>
+<summary><b><code>UwbErrorCode.regionalRestriction</code> on first ranging call</b></summary>
+
+UWB is disabled by the OS in a small number of jurisdictions (Russia, Indonesia, parts of South America). The hardware is present but the radio is locked. There's no programmatic recovery — surface a region-restriction notice to the user.
+</details>
+
+<details>
+<summary><b><code>isUwbAvailable()</code> returns <code>false</code> on a Pixel 6/7/8</b></summary>
+
+If the device has a UWB radio and isn't region-restricted, the most common cause is a stale `UwbManager` state after the screen-lock cycle. Toggle airplane mode once and retry. If it still returns false, confirm the build is on Android 14+ — older Android versions report UWB inconsistently.
+</details>
+
+<details>
+<summary><b>iOS ranging starts then stops "randomly"</b></summary>
+
+If the host app backgrounds during a session, the plugin tears down the active `NISession` and fires `onPeerLost` so the app can react (the alternative is undefined behaviour from `NISession` + `ARSession` left running across suspension). The host app should re-call `startRanging` on foreground if it wants ranging back.
+
+If you see this without backgrounding, the most likely cause is camera-assist on a session whose `ARSession` hasn't received its first frame yet — that surfaces as `NIErrorCodeInvalidARConfiguration` (-5883). Disable `cameraAssist` in `RangingOptions` and retry.
+</details>
+
+<details>
+<summary><b>Cross-OS (iPhone ↔ Android) pairs but never produces samples</b></summary>
+
+Known limitation in 0.4.x. BLE discovery, the Apple-FiRa accessory handshake, and Android UWB session activation all complete, but `androidx.core.uwb` rejects the slot duration Apple selects so distance samples are not delivered. Same-OS pairs are unaffected. Tracked for v0.5.0.
+</details>
+
+<details>
+<summary><b>How to enable verbose plugin logs</b></summary>
+
+```dart
+import 'package:flutter_uwb/flutter_uwb.dart';
+
+void main() {
+  if (kDebugMode) UwbLog.setLevel(UwbLogLevel.debug);
+  UwbLog.setHandler((level, msg) => debugPrint('[uwb] [$level] $msg'));
+  runApp(const MyApp());
+}
+```
+
+Native logs: `adb logcat | grep flutter_uwb` on Android, Xcode console filtered by subsystem `flutter_uwb` on iOS.
+</details>
+
 ## Architecture
 
 For protocol details, token format, BLE/UWB topology, the ECDH-keyed Provisioned STS handshake, and the cross-OS capability-flag routing matrix, see [`doc/architecture.md`](doc/architecture.md).
