@@ -27,7 +27,9 @@ import NearbyInteraction
 /// 7. `stop()` invalidates the session, writes `Stop` (0x0C), and disconnects.
 ///
 /// Requires iOS 15+; older devices fall back to peer-mode only.
-final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
+final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate,
+  ARSessionDelegate
+{
   let deviceId: String
 
   private let flutterApi: UwbFlutterApi
@@ -36,6 +38,11 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
 
   private var session: NISession?
   private var arSession: ARSession?
+  /// Held until the AR session delivers its first frame, then consumed by
+  /// the AR delegate to start NI ranging. NI rejects camera-assist configs
+  /// when the AR session has no frames yet (NIErrorCodeInvalidARConfiguration
+  /// / `invalidARSessionDescription`).
+  private var pendingNIConfig: NINearbyAccessoryConfiguration?
   /// State machine for the multi-message handshake.
   private enum State {
     case idle
@@ -78,13 +85,43 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
   func stop() {
     let wasActive = state != .idle && state != .stopping
     state = .stopping
+    pendingNIConfig = nil
     session?.invalidate()
     session = nil
     if wasActive { writeMessage(.stop) }
     ble?.accessoryDisconnect(deviceId: deviceId)
-    arSession?.pause()
+    if let ar = arSession {
+      // Drop the delegate before pausing so ARKit stops dispatching frames
+      // to us. Otherwise the "delegate retaining N ARFrames" warning fires
+      // and the camera eventually stalls.
+      ar.delegate = nil
+      ar.pause()
+    }
     arSession = nil
     state = .idle
+  }
+
+  // MARK: - ARSessionDelegate
+
+  func session(_ session: ARSession, didUpdate frame: ARFrame) {
+    guard let pending = pendingNIConfig, let ni = self.session else { return }
+    pendingNIConfig = nil
+    ni.run(pending)
+  }
+
+  func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool {
+    // NI requires this to be false when sharing the AR session, otherwise
+    // NIErrorCodeInvalidARConfiguration (-5883) fires on the NI side.
+    return false
+  }
+
+  func session(_ session: ARSession, didFailWithError error: Error) {
+    let nsError = error as NSError
+    pendingNIConfig = nil
+    fail(
+      "ARSession failed: \(nsError.domain) code=\(nsError.code) "
+        + "\(error.localizedDescription)"
+    )
   }
 
   // MARK: - Inbound BLE notifications
@@ -101,19 +138,29 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate {
     case (.awaitingAccessoryConfig, .accessoryConfigurationData):
       do {
         let config = try NINearbyAccessoryConfiguration(data: payload)
-        if cameraAssist {
-          config.isCameraAssistanceEnabled = true
-        }
         let s = NISession()
         s.delegate = self
         self.session = s
         if cameraAssist {
+          // Mirror IosPeerStrategy's AR-first / NI-deferred pattern, otherwise
+          // NI invalidates the session with NIErrorCodeInvalidARConfiguration
+          // (-5883 / 1100 invalidARSessionDescription).
+          config.isCameraAssistanceEnabled = true
+          let arConfig = ARWorldTrackingConfiguration()
+          arConfig.worldAlignment = .gravity
+          arConfig.isCollaborationEnabled = false
+          arConfig.userFaceTrackingEnabled = false
+          arConfig.initialWorldMap = nil
           let ar = ARSession()
-          ar.run(ARWorldTrackingConfiguration())
+          ar.delegate = self
+          ar.run(arConfig)
           arSession = ar
           s.setARSession(ar)
+          // Defer s.run(config) to ARSessionDelegate.session(_:didUpdate:).
+          pendingNIConfig = config
+        } else {
+          s.run(config)
         }
-        s.run(config)
       } catch {
         fail("NINearbyAccessoryConfiguration: \(error.localizedDescription)")
       }

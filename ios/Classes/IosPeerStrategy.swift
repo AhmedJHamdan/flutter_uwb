@@ -108,6 +108,15 @@ final class IosPeerStrategy: NSObject, RangingStrategy, NISessionDelegate, ARSes
       }
     }
     if cameraAssist {
+      // Tear down any AR session left over from a previous start() —
+      // notably from sessionSuspensionEnded re-entering this path.
+      // Without this, the old delegate keeps receiving frames and ARKit
+      // accumulates them ("delegate retaining N ARFrames").
+      if let old = arSession {
+        old.delegate = nil
+        old.pause()
+        arSession = nil
+      }
       let arConfig = ARWorldTrackingConfiguration()
       arConfig.worldAlignment = .gravity
       arConfig.isCollaborationEnabled = false
@@ -158,7 +167,14 @@ final class IosPeerStrategy: NSObject, RangingStrategy, NISessionDelegate, ARSes
     pendingNIConfig = nil
     session?.invalidate()
     session = nil
-    arSession?.pause()
+    if let ar = arSession {
+      // Clear the delegate first — otherwise ARKit can keep dispatching
+      // frames after pause(), and ARC won't release them because we still
+      // hold a reference here. That's the "delegate retaining N ARFrames"
+      // warning, which eventually starves the camera and hangs the app.
+      ar.delegate = nil
+      ar.pause()
+    }
     arSession = nil
   }
 
