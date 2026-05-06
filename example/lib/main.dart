@@ -6,6 +6,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_uwb/flutter_uwb.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'brand.dart';
 import 'widgets/precision_arrow.dart';
@@ -49,10 +50,12 @@ class _Home extends StatefulWidget {
   State<_Home> createState() => _HomeState();
 }
 
-class _HomeState extends State<_Home> {
+class _HomeState extends State<_Home> with WidgetsBindingObserver {
   final FlutterUwb _uwb = FlutterUwb.instance;
 
   bool? _uwbAvailable;
+  bool _bluetoothEnabled = true;
+  List<String> _missingPermissions = const [];
   bool _scanning = false;
   String? _error;
   bool _cameraAssist = false;
@@ -77,7 +80,8 @@ class _HomeState extends State<_Home> {
   @override
   void initState() {
     super.initState();
-    _checkUwb();
+    WidgetsBinding.instance.addObserver(this);
+    _checkReadiness();
     // Register the Qorvo accessory profile so DWM3001CDK boards surface in
     // the same `deviceFound` stream as iOS / Android peers.
     _uwb.registerAccessoryProfile(
@@ -179,6 +183,7 @@ class _HomeState extends State<_Home> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _deviceFoundSub?.cancel();
     _deviceLostSub?.cancel();
     _samplesSub?.cancel();
@@ -191,13 +196,56 @@ class _HomeState extends State<_Home> {
     super.dispose();
   }
 
-  Future<void> _checkUwb() async {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Recheck on resume so users coming back from system Settings
+    // (after granting a permission or enabling Bluetooth) see the
+    // banner clear without restarting the app.
+    if (state == AppLifecycleState.resumed) {
+      _checkReadiness(requestIfDenied: false);
+    }
+  }
+
+  /// Probe the plugin's readiness, request any missing Android runtime
+  /// permissions through `permission_handler`, then snapshot the device
+  /// capabilities for the Settings tab.
+  Future<void> _checkReadiness({bool requestIfDenied = true}) async {
     try {
-      final available = await _uwb.isUwbAvailable();
+      var r = await _uwb.checkReadiness();
+      if (!mounted) return;
+
+      // First pass: surface what we have so the banner reflects reality
+      // even if the user dismisses the system permission prompt.
+      setState(() {
+        _uwbAvailable = r.uwbAvailable;
+        _bluetoothEnabled = r.bluetoothEnabled;
+        _missingPermissions = r.missingPermissions.whereType<String>().toList(
+          growable: false,
+        );
+      });
+
+      // Second pass: ask for anything ungranted that permission_handler
+      // knows about. Re-check afterwards so the banner clears once the
+      // user accepts.
+      if (requestIfDenied && !r.permissionsGranted) {
+        final toRequest = _toPermissions(r.missingPermissions);
+        if (toRequest.isNotEmpty) {
+          await toRequest.request();
+          r = await _uwb.checkReadiness();
+          if (!mounted) return;
+          setState(() {
+            _uwbAvailable = r.uwbAvailable;
+            _bluetoothEnabled = r.bluetoothEnabled;
+            _missingPermissions = r.missingPermissions
+                .whereType<String>()
+                .toList(growable: false);
+          });
+        }
+      }
+
       final caps = await _uwb.getDeviceCapabilities();
       if (!mounted) return;
       setState(() {
-        _uwbAvailable = available;
         _capabilities = caps;
         // Default the precision toggles ON when the hardware supports them
         // — matches the "premium experience by default" expectation. The
@@ -207,8 +255,32 @@ class _HomeState extends State<_Home> {
       });
     } on UwbException catch (e) {
       if (!mounted) return;
-      setState(() => _error = 'isUwbAvailable failed: ${e.message}');
+      setState(() => _error = 'checkReadiness failed: ${e.message}');
     }
+  }
+
+  /// Map plugin-reported `android.permission.*` strings to
+  /// `permission_handler` Permission objects. Skips entries the package
+  /// doesn't model (UWB_RANGING is not a typed Permission in 11.x — the
+  /// system prompts on first use of the UWB radio anyway).
+  List<Permission> _toPermissions(List<String?> raw) {
+    final result = <Permission>[];
+    for (final p in raw) {
+      switch (p) {
+        case 'android.permission.BLUETOOTH_SCAN':
+          result.add(Permission.bluetoothScan);
+        case 'android.permission.BLUETOOTH_CONNECT':
+          result.add(Permission.bluetoothConnect);
+        case 'android.permission.BLUETOOTH_ADVERTISE':
+          result.add(Permission.bluetoothAdvertise);
+        case 'android.permission.ACCESS_FINE_LOCATION':
+          result.add(Permission.locationWhenInUse);
+        // android.permission.BLUETOOTH / BLUETOOTH_ADMIN are
+        // install-time perms on API <31 and don't go through
+        // permission_handler.
+      }
+    }
+    return result;
   }
 
   Future<void> _toggleScan() async {
@@ -402,14 +474,26 @@ class _HomeState extends State<_Home> {
             ),
           ),
           const SizedBox(height: 18),
-          if (_uwbAvailable == false)
+          if (_missingPermissions.isNotEmpty)
+            _StatusBanner(
+              text: 'Missing permissions — open Settings to grant access',
+              color: Brand.warm,
+            )
+          else if (!_bluetoothEnabled)
+            _StatusBanner(
+              text: 'Bluetooth is off — enable it to discover peers',
+              color: Brand.warm,
+            )
+          else if (_uwbAvailable == false)
             _StatusBanner(
               text: 'UWB hardware not available on this device',
               color: Brand.muted,
-            ),
-          if (_uwbAvailable == true && _activeRangingId == null && !_scanning)
-            _StatusBanner(text: 'Tap Start Ranging to discover peers'),
-          if (_scanning && _activeRangingId == null)
+            )
+          else if (_uwbAvailable == true &&
+              _activeRangingId == null &&
+              !_scanning)
+            _StatusBanner(text: 'Tap Start Ranging to discover peers')
+          else if (_scanning && _activeRangingId == null)
             _StatusBanner(text: 'Scanning for peers…'),
           const SizedBox(height: 12),
           Row(
