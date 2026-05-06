@@ -2,6 +2,7 @@ import CoreBluetooth
 import Flutter
 import Foundation
 import NearbyInteraction
+import UIKit
 
 // Pigeon 14.0.1's Swift FlutterApi codegen uses `Result<Void, FlutterError>`.
 // `FlutterError` from the Flutter framework is an NSObject and is not
@@ -45,6 +46,57 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     super.init()
     ble.callback = self
     peer.callback = self
+    registerLifecycleObservers()
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
+  }
+
+  // MARK: - App lifecycle
+
+  /// Observes background / terminate notifications so we tear down the
+  /// active UWB session before iOS suspends us. NI/AR sessions left
+  /// running across a background transition produce undefined behaviour
+  /// (delegate retain warnings, camera stalls, occasional crashes on
+  /// resume). The contract is "host app re-calls startRanging on
+  /// foreground" — we don't auto-resume.
+  private func registerLifecycleObservers() {
+    let nc = NotificationCenter.default
+    nc.addObserver(
+      self,
+      selector: #selector(handleAppDidEnterBackground),
+      name: UIApplication.didEnterBackgroundNotification,
+      object: nil
+    )
+    nc.addObserver(
+      self,
+      selector: #selector(handleAppWillTerminate),
+      name: UIApplication.willTerminateNotification,
+      object: nil
+    )
+  }
+
+  @objc private func handleAppDidEnterBackground() {
+    teardownActiveSession(reason: "iOS app entered background")
+  }
+
+  @objc private func handleAppWillTerminate() {
+    teardownActiveSession(reason: "iOS app will terminate")
+    ble.stop()
+    peer.stop()
+  }
+
+  /// Stop the currently-active strategy and notify Dart so the host app
+  /// can clear its UI / re-pair on foreground. No-op if no session is
+  /// active.
+  private func teardownActiveSession(reason: String) {
+    guard let strategy = activeStrategy else { return }
+    let deviceId = strategy.deviceId
+    strategy.stop()
+    activeStrategy = nil
+    localTokenSession = nil
+    flutterApi.onPeerLost(deviceId: deviceId) { _ in }
   }
 
   // MARK: - Accessory profiles
