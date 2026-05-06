@@ -8,7 +8,30 @@ class Brand {
   static const Color secondary = Color(0xFF02569B);
   static const Color text = Color(0xFFE6ECFF);
   static const Color muted = Color(0xFF6B7392);
+  static const Color warm = Color(0xFFFFB347);
 }
+
+/// Stays on-brand: distant targets fade toward `Brand.muted`, close targets
+/// land on full `Brand.primary` (and pop slightly brighter inside the HERE
+/// bin). No amber shift — keeps the palette aligned with the rest of the UI.
+Color proximityColor(double meters) {
+  if (meters <= 0.5) {
+    return Color.lerp(Brand.primary, Colors.white, 0.25)!;
+  }
+  final t = 1.0 - (meters / 6.0).clamp(0.0, 1.0);
+  return Color.lerp(Brand.muted, Brand.primary, t)!;
+}
+
+/// Coarse human-readable proximity bucket used as the eyebrow / verb.
+String proximityVerb(double meters) {
+  if (meters <= 0.5) return 'HERE';
+  if (meters <= 5.0) return 'APPROACHING';
+  return 'FAR';
+}
+
+/// Discrete bin for haptic ticks — one click per `step` metres travelled.
+int proximityBin(double meters, {double step = 0.25}) =>
+    (meters / step).floor();
 
 ThemeData buildBrandTheme() {
   final base = ThemeData.dark(useMaterial3: true);

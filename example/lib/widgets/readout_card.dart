@@ -12,19 +12,24 @@ class ReadoutCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
       decoration: BoxDecoration(
         color: const Color(0xFF13182F),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Brand.muted.withValues(alpha: 0.25)),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Brand.muted.withValues(alpha: 0.18)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(value, style: readoutValueStyle()),
-          const SizedBox(height: 4),
           Text(label.toUpperCase(), style: readoutLabelStyle()),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: readoutValueStyle().copyWith(fontSize: 16, height: 1.1),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ],
       ),
     );
