@@ -1,36 +1,62 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 import '../brand.dart';
 
-/// Concentric-ring radar mirroring `assets/brand/flutter_uwb_pulse.svg`.
+/// Animated radar shown while UWB is ranging without direction (AoA).
 ///
-/// The painter scales the SVG's 320×320 logical canvas (rings at r=120, 84,
-/// 48 and a core dot at r=10) to whatever box it's given. The tracked-point
-/// dot is drawn at [trackedAngleRadians] / [trackedNormalizedDistance]
-/// (0..1) so the parent can drive it from a live `RangingSample`.
-class Radar extends StatelessWidget {
-  const Radar({
-    super.key,
-    this.trackedNormalizedDistance,
-    this.trackedAngleRadians,
-  });
+/// Three staggered pulse rings expand from the centre and fade as they reach
+/// the edge, layered over a faint static guide ring. There's no tracked-dot —
+/// without azimuth, the only honest signal is "we're locked on", which is
+/// what the pulse conveys.
+class Radar extends StatefulWidget {
+  const Radar({super.key, this.active = true});
 
-  /// 0..1 along the radar's outer ring (1 = ring r=120 in the SVG canvas).
-  final double? trackedNormalizedDistance;
+  /// When `false`, the radar renders a static guide ring + centre dot with
+  /// no pulse animation (used while idle / not ranging).
+  final bool active;
 
-  /// Polar angle in radians (0 = right, increasing counter-clockwise).
-  final double? trackedAngleRadians;
+  @override
+  State<Radar> createState() => _RadarState();
+}
+
+class _RadarState extends State<Radar> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2400),
+    );
+    if (widget.active) _ctrl.repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant Radar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !_ctrl.isAnimating) {
+      _ctrl.repeat();
+    } else if (!widget.active && _ctrl.isAnimating) {
+      _ctrl.stop();
+      _ctrl.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return AspectRatio(
       aspectRatio: 1,
-      child: CustomPaint(
-        painter: _RadarPainter(
-          trackedNormalizedDistance: trackedNormalizedDistance,
-          trackedAngleRadians: trackedAngleRadians,
+      child: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (context, _) => CustomPaint(
+          painter: _RadarPainter(progress: _ctrl.value, active: widget.active),
         ),
       ),
     );
@@ -38,20 +64,55 @@ class Radar extends StatelessWidget {
 }
 
 class _RadarPainter extends CustomPainter {
-  _RadarPainter({this.trackedNormalizedDistance, this.trackedAngleRadians});
+  _RadarPainter({required this.progress, required this.active});
 
-  final double? trackedNormalizedDistance;
-  final double? trackedAngleRadians;
+  /// 0..1 — global animation phase. Each pulse ring offsets from this.
+  final double progress;
+  final bool active;
 
-  static const double _canvas = 320; // matches the SVG viewBox
+  static const _pulseCount = 3;
+
+  static const double _canvas = 320;
   static const double _ringOuter = 120;
   static const double _ringMid = 84;
   static const double _ringInner = 48;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final scale = size.shortestSide / _canvas;
     final center = size.center(Offset.zero);
+    final maxRadius = size.shortestSide / 2;
+
+    if (active) {
+      for (var i = 0; i < _pulseCount; i++) {
+        final phase = (progress + i / _pulseCount) % 1.0;
+        final radius = maxRadius * phase;
+        final opacity = (1.0 - phase).clamp(0.0, 1.0);
+        final ring = Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..color = Brand.primary.withValues(alpha: 0.55 * opacity);
+        canvas.drawCircle(center, radius, ring);
+      }
+
+      final corePulse = 0.5 + 0.5 * (progress * 2 % 1.0);
+      final coreGlow = Paint()
+        ..shader =
+            RadialGradient(
+              colors: [
+                Brand.primary.withValues(alpha: 0.35 * corePulse),
+                Brand.primary.withValues(alpha: 0.0),
+              ],
+              stops: const [0.0, 1.0],
+            ).createShader(
+              Rect.fromCircle(center: center, radius: maxRadius * 0.32),
+            );
+      canvas.drawCircle(center, maxRadius * 0.32, coreGlow);
+      canvas.drawCircle(center, 6, Paint()..color = Brand.primary);
+      return;
+    }
+
+    // Inactive: draw the brand logo (concentric SVG rings + core dot).
+    final scale = size.shortestSide / _canvas;
 
     final glow = Paint()
       ..shader = RadialGradient(
@@ -82,26 +143,9 @@ class _RadarPainter extends CustomPainter {
 
     canvas.drawCircle(center, 10 * scale, Paint()..color = Brand.primary);
     canvas.drawCircle(center, 4 * scale, Paint()..color = Brand.background);
-
-    if (trackedNormalizedDistance != null) {
-      final r =
-          (trackedNormalizedDistance!.clamp(0.0, 1.0)) * _ringOuter * scale;
-      final a = trackedAngleRadians ?? -math.pi / 2;
-      final dot = center + Offset(r * math.cos(a), -r * math.sin(a));
-      canvas.drawCircle(dot, 6 * scale, Paint()..color = Brand.primary);
-      canvas.drawCircle(
-        dot,
-        12 * scale,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5 * scale
-          ..color = Brand.primary.withValues(alpha: 0.5),
-      );
-    }
   }
 
   @override
   bool shouldRepaint(covariant _RadarPainter old) =>
-      old.trackedNormalizedDistance != trackedNormalizedDistance ||
-      old.trackedAngleRadians != trackedAngleRadians;
+      old.progress != progress || old.active != active;
 }
