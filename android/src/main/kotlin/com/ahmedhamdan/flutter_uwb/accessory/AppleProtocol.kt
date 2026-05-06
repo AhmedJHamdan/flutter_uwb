@@ -22,6 +22,32 @@ import java.nio.ByteOrder
  */
 object AppleProtocol {
 
+    /**
+     * 21-byte `UWBConfigData` capability advertisement.
+     *
+     * Apple's accessory protocol leaves this blob opaque — its layout is
+     * defined by the FiRa Consortium UCI spec, not by Apple. The values here
+     * are a working frame captured from the Qorvo DWM3001 + NI middleware
+     * reference firmware (shared on the Qorvo Tech Forum:
+     * `forum.qorvo.com/t/apple-ni-configuration-data-frame/10796`).
+     *
+     * It is not Qorvo-specific in any meaningful sense: the iPhone overrides
+     * the negotiated session params via its own `AppleUWBConfigData` blob in
+     * `ConfigureAndStart` (0x0B), so this template only needs to be
+     * structurally valid for the iPhone to accept us as an Apple-NI
+     * accessory and proceed to the shareable-config exchange.
+     *
+     * Bytes 17-18 are the controlee's 2-byte short address and are spliced
+     * in per session by [buildAccessoryConfigurationData]. Everything else
+     * is constant.
+     */
+    private val QORVO_REFERENCE_UWB_CONFIG_DATA: ByteArray = byteArrayOf(
+        0x01, 0x00, 0x01, 0x00, 0x3F.toByte(), 0xF5.toByte(), 0x03, 0x00,
+        0xB8.toByte(), 0x0B, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01,
+        0x01, 0x00 /* short addr lo, spliced per session */,
+        0x00 /* short addr hi, spliced per session */, 0x19, 0x00,
+    )
+
     enum class MessageId(val value: Byte) {
         AccessoryConfigurationData(0x01),
         AccessoryUwbDidStart(0x02),
@@ -104,13 +130,9 @@ object AppleProtocol {
         // bytes 5..14 left as zero (RFU)
         out[15] = 0x15                          // UWBConfigDataLength = 21
 
-        // 21-byte UWBConfigData FiRa blob (constant template + short addr).
-        val uwb = byteArrayOf(
-            0x01, 0x00, 0x01, 0x00, 0x3F.toByte(), 0xF5.toByte(), 0x03, 0x00,
-            0xB8.toByte(), 0x0B, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01,
-            0x01, 0x00 /* short addr lo */, 0x00 /* short addr hi */, 0x19, 0x00,
-        )
-        // Splice short address at UWBConfigData offsets 17-18.
+        // Splice the per-session short address into a copy of the constant
+        // capability template at UWBConfigData offsets 17-18.
+        val uwb = QORVO_REFERENCE_UWB_CONFIG_DATA.copyOf()
         uwb[17] = shortAddress[0]
         uwb[18] = shortAddress[1]
         System.arraycopy(uwb, 0, out, 16, 21)
