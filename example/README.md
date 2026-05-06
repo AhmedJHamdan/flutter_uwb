@@ -46,17 +46,21 @@ profiles).
 
 ## Permissions
 
-The example does **not** currently request runtime permissions. On
-iOS the OS auto-prompts on first BLE / NI access (driven by
-`Info.plist` usage descriptions). On Android 12+ this is a known
-gap — the app will fail at `startDiscovery` with `permissionDenied`
-on a fresh install until the user grants `BLUETOOTH_SCAN`,
-`BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE`, and `UWB_RANGING` from
-the system settings page.
+On startup the app calls `uwb.checkReadiness()` and feeds any
+ungranted Android permissions into
+[`permission_handler`](https://pub.dev/packages/permission_handler).
+A banner across the Ranging tab tells the user when Bluetooth is
+off, when permissions are still missing, or when the device has no
+UWB radio.
 
-The fix is a follow-up PR that wires
-[`permission_handler`](https://pub.dev/packages/permission_handler)
-into the example's startup flow.
+The check re-runs on `AppLifecycleState.resumed`, so a user who
+walks to system Settings to grant a permission and comes back sees
+the banner clear without restarting the app.
+
+iOS exposes no runtime API to query Bluetooth / Nearby Interaction
+permission — the OS prompts on first use driven by the Info.plist
+usage descriptions, and `checkReadiness().permissionsGranted` is
+always `true` on iOS.
 
 ## Where things live
 
