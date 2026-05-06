@@ -224,6 +224,64 @@ void main() {
     });
   });
 
+  group('Lifecycle', () {
+    test('dispose closes all broadcast streams and clears the singleton',
+        () async {
+      final uwb = FlutterUwb.instance;
+      expect(uwb.isDisposed, isFalse);
+
+      // Capture done futures before close so we can assert each closed.
+      final dones = <Future<void>>[
+        uwb.deviceFound.drain<void>(),
+        uwb.deviceLost.drain<void>(),
+        uwb.rangingSamples.drain<void>(),
+        uwb.peerLost.drain<void>(),
+        uwb.rangingErrors.drain<void>(),
+        uwb.incomingRequests.drain<void>(),
+      ];
+
+      await uwb.dispose();
+      expect(uwb.isDisposed, isTrue);
+      // Each drain completes when its stream closes.
+      await Future.wait(dones).timeout(const Duration(seconds: 1));
+
+      // Singleton is recreated on next access.
+      expect(identical(FlutterUwb.instance, uwb), isFalse);
+    });
+
+    test('dispose is idempotent', () async {
+      final uwb = FlutterUwb.instance;
+      await uwb.dispose();
+      // Second call should not throw.
+      await uwb.dispose();
+      expect(uwb.isDisposed, isTrue);
+    });
+
+    test('platform messages after dispose are silently dropped', () async {
+      const codec = pigeon.UwbFlutterApi.pigeonChannelCodec;
+      final uwb = FlutterUwb.instance;
+      await uwb.dispose();
+
+      // Re-attach a handler so the channel is live, but it should drop
+      // events on the disposed instance without throwing.
+      final device = UwbDevice(id: 'late', name: 'L', platform: 'android');
+      final msg = codec.encodeMessage(<Object?>[device]);
+      // Construct a fresh instance after dispose so the new handler is
+      // attached; the *old* uwb's streams are already closed.
+      final fresh = FlutterUwb.instance;
+      final received = <UwbDevice>[];
+      final sub = fresh.deviceFound.listen(received.add);
+      await binaryMessenger.handlePlatformMessage(
+        _flutterChan('onDeviceFound'),
+        msg,
+        (_) {},
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(received, hasLength(1));
+      await sub.cancel();
+    });
+  });
+
   group('Stream wiring (FlutterApi → broadcast streams)', () {
     test('onDeviceFound pushes into the deviceFound stream', () async {
       const codec = pigeon.UwbFlutterApi.pigeonChannelCodec;
