@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a new capability or API change
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The fastest path to acceptance is a proposal that frames the
+        end-user problem (not just the API), shows what calling code
+        would look like, and notes any platform constraints you've
+        already discovered.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can users not do today, and why does that matter?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API or behaviour
+      description: Sketch the public surface and how callers would use it.
+      render: dart
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or competing designs you've thought through.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Affects platforms
+      multiple: true
+      options:
+        - iOS
+        - Android
+        - Both
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Platform constraints
+      description: |
+        Anything you've learned about iOS NI / Android Jetpack UWB /
+        Apple's accessory protocol that bounds the design.

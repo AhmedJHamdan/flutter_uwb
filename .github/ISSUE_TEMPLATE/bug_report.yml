@@ -1,0 +1,94 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill out as much
+        of this template as you can — the better the reproducer, the
+        faster the fix.
+
+        Security-sensitive issues: do **not** file here. See
+        [`SECURITY.md`](https://github.com/AhmedJHamdan/flutter_uwb/blob/main/SECURITY.md).
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: flutter_uwb version
+      placeholder: "0.4.1"
+    validations:
+      required: true
+
+  - type: input
+    id: flutter-version
+    attributes:
+      label: Flutter / Dart version
+      description: Output of `flutter --version`
+      placeholder: "Flutter 3.41.9 / Dart 3.11.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      multiple: true
+      options:
+        - iOS
+        - Android
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device(s) and OS version
+      description: Both peers if it's a pairing issue.
+      placeholder: "iPhone 15 Pro on iOS 17.4 ↔ Pixel 8 Pro on Android 14"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Plain description of the unexpected behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: Code, exact steps, or the smallest failing project you can share.
+      render: dart
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Native logs (`adb logcat | grep flutter_uwb`,
+        Xcode console with subsystem `flutter_uwb`) and any Dart
+        exception stack traces.
+      render: text
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I've checked existing issues for duplicates.
+          required: true
+        - label: I've tested on real hardware (not just simulator/emulator) when applicable.
+          required: false

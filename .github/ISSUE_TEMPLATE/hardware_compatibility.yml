@@ -1,0 +1,61 @@
+name: Hardware compatibility report
+description: Help track which UWB devices and accessories work with the plugin
+labels: ["hardware"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for "does device X work" reports — both successes and
+        failures. Successful pairings are just as valuable as failures
+        because they fill out the support matrix.
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: flutter_uwb version
+      placeholder: "0.4.1"
+    validations:
+      required: true
+
+  - type: input
+    id: device-a
+    attributes:
+      label: Device A
+      placeholder: "iPhone 15 Pro on iOS 17.4"
+    validations:
+      required: true
+
+  - type: input
+    id: device-b
+    attributes:
+      label: Device B (or accessory)
+      placeholder: "Pixel 8 Pro on Android 14, or Qorvo DWM3001CDK"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - "Works — distance updates in real time"
+        - "Works — distance only, no direction"
+        - "Pairs but session never starts"
+        - "Pairs but session drops mid-ranging"
+        - "Discovery never finds the peer"
+        - "Other (describe below)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Any nuances — distance, line of sight, regional restrictions, etc.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Native logs from both sides if available.
+      render: text
