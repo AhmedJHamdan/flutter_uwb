@@ -3,6 +3,8 @@ import 'dart:typed_data';
 
 import 'src/pigeon/uwb.g.dart';
 
+export 'src/log.dart' show UwbLog, UwbLogLevel;
+
 export 'src/pigeon/uwb.g.dart'
     show
         AccessoryProfile,
