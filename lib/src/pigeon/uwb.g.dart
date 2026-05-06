@@ -319,6 +319,74 @@ class DeviceCapabilities {
   }
 }
 
+/// Snapshot of everything the plugin needs to start ranging.
+///
+/// Returned by [UwbHostApi.checkReadiness]. The host app should branch
+/// on each field and surface the appropriate UI:
+///
+/// ```dart
+/// final r = await uwb.checkReadiness();
+/// if (!r.bluetoothEnabled) promptEnableBluetooth();
+/// else if (!r.permissionsGranted) requestPermissions(r.missingPermissions);
+/// else if (!r.uwbAvailable) showUnsupportedScreen();
+/// else readyToRange();
+/// ```
+class UwbReadiness {
+  UwbReadiness({
+    required this.uwbAvailable,
+    required this.bluetoothEnabled,
+    required this.permissionsGranted,
+    required this.missingPermissions,
+  });
+
+  /// `true` if the device has a UWB radio and the OS allows ranging.
+  /// Mirrors [UwbHostApi.isUwbAvailable] — false on the iOS simulator and
+  /// on devices without UWB hardware.
+  bool uwbAvailable;
+
+  /// `true` if the system Bluetooth radio is powered on. Required for
+  /// OOB discovery / pairing on both platforms.
+  bool bluetoothEnabled;
+
+  /// `true` if every runtime permission the plugin needs has been
+  /// granted. Always `true` on iOS — iOS does not expose a programmatic
+  /// pre-check for `NSBluetoothAlwaysUsageDescription` /
+  /// `NSNearbyInteractionUsageDescription`; the OS prompts on first use.
+  bool permissionsGranted;
+
+  /// Android permission identifiers (`android.permission.*`) the plugin
+  /// needs but the user has not granted yet. Empty on iOS. Pass these
+  /// directly to your permission package — for example with
+  /// `permission_handler`:
+  ///
+  /// ```dart
+  /// final perms = r.missingPermissions
+  ///     .map(Permission.byValue)
+  ///     .toList();
+  /// await perms.request();
+  /// ```
+  List<String?> missingPermissions;
+
+  Object encode() {
+    return <Object?>[
+      uwbAvailable,
+      bluetoothEnabled,
+      permissionsGranted,
+      missingPermissions,
+    ];
+  }
+
+  static UwbReadiness decode(Object result) {
+    result as List<Object?>;
+    return UwbReadiness(
+      uwbAvailable: result[0]! as bool,
+      bluetoothEnabled: result[1]! as bool,
+      permissionsGranted: result[2]! as bool,
+      missingPermissions: (result[3] as List<Object?>?)!.cast<String?>(),
+    );
+  }
+}
+
 class RangingSample {
   RangingSample({
     required this.deviceId,
@@ -379,8 +447,11 @@ class _UwbHostApiCodec extends StandardMessageCodec {
     } else if (value is UwbDevice) {
       buffer.putUint8(132);
       writeValue(buffer, value.encode());
-    } else if (value is VoidResult) {
+    } else if (value is UwbReadiness) {
       buffer.putUint8(133);
+      writeValue(buffer, value.encode());
+    } else if (value is VoidResult) {
+      buffer.putUint8(134);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -401,6 +472,8 @@ class _UwbHostApiCodec extends StandardMessageCodec {
       case 132:
         return UwbDevice.decode(readValue(buffer)!);
       case 133:
+        return UwbReadiness.decode(readValue(buffer)!);
+      case 134:
         return VoidResult.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -806,6 +879,39 @@ class UwbHostApi {
       );
     } else {
       return (__pigeon_replyList[0] as DeviceCapabilities?)!;
+    }
+  }
+
+  /// One-shot check of everything the plugin needs to start ranging:
+  /// UWB hardware, Bluetooth state, runtime permissions. The host app
+  /// uses this to drive its onboarding flow before calling
+  /// [startDiscovery] / [startRanging].
+  Future<UwbReadiness> checkReadiness() async {
+    const String __pigeon_channelName =
+        'dev.flutter.pigeon.flutter_uwb.UwbHostApi.checkReadiness';
+    final BasicMessageChannel<Object?> __pigeon_channel =
+        BasicMessageChannel<Object?>(
+      __pigeon_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: __pigeon_binaryMessenger,
+    );
+    final List<Object?>? __pigeon_replyList =
+        await __pigeon_channel.send(null) as List<Object?>?;
+    if (__pigeon_replyList == null) {
+      throw _createConnectionError(__pigeon_channelName);
+    } else if (__pigeon_replyList.length > 1) {
+      throw PlatformException(
+        code: __pigeon_replyList[0]! as String,
+        message: __pigeon_replyList[1] as String?,
+        details: __pigeon_replyList[2],
+      );
+    } else if (__pigeon_replyList[0] == null) {
+      throw PlatformException(
+        code: 'null-error',
+        message: 'Host platform returned null value for non-null return value.',
+      );
+    } else {
+      return (__pigeon_replyList[0] as UwbReadiness?)!;
     }
   }
 }

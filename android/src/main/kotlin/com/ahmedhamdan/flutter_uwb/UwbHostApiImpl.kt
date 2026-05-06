@@ -1,9 +1,11 @@
 package com.ahmedhamdan.flutter_uwb
 
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.core.uwb.UwbAvailabilityCallback
 import androidx.core.uwb.UwbControleeSessionScope
 import androidx.core.uwb.UwbControllerSessionScope
@@ -480,6 +482,79 @@ class UwbHostApiImpl(
                     ),
                 )
             }
+        }
+    }
+
+    override fun checkReadiness(callback: (Result<UwbReadiness>) -> Unit) {
+        mainScope.launch {
+            val missing = collectMissingPermissions()
+            val bt = isBluetoothEnabled()
+            val uwb = probeUwbAvailable()
+            callback(
+                Result.success(
+                    UwbReadiness(
+                        uwbAvailable = uwb,
+                        bluetoothEnabled = bt,
+                        permissionsGranted = missing.isEmpty(),
+                        missingPermissions = missing,
+                    ),
+                ),
+            )
+        }
+    }
+
+    /**
+     * Permissions the plugin's BLE OOB transport and UWB ranging code
+     * actually call into at runtime. Mirrors what the plugin's manifest
+     * declares, scoped to the current API level.
+     */
+    private fun collectMissingPermissions(): List<String> {
+        val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            listOf(
+                "android.permission.BLUETOOTH_SCAN",
+                "android.permission.BLUETOOTH_CONNECT",
+                "android.permission.BLUETOOTH_ADVERTISE",
+                "android.permission.UWB_RANGING",
+            )
+        } else {
+            listOf(
+                "android.permission.BLUETOOTH",
+                "android.permission.BLUETOOTH_ADMIN",
+                "android.permission.ACCESS_FINE_LOCATION",
+            )
+        }
+        return needed.filter {
+            ContextCompat.checkSelfPermission(appContext, it) !=
+                PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun isBluetoothEnabled(): Boolean {
+        val mgr = appContext.getSystemService(Context.BLUETOOTH_SERVICE)
+            as? BluetoothManager ?: return false
+        return try {
+            mgr.adapter?.isEnabled == true
+        } catch (_: SecurityException) {
+            // Pre-API-31 reads need BLUETOOTH; post-31 needs BLUETOOTH_CONNECT.
+            // If neither is granted, we report bluetooth as not enabled rather
+            // than crashing — the missingPermissions list covers the real fix.
+            false
+        }
+    }
+
+    private suspend fun probeUwbAvailable(): Boolean {
+        if (isEmulator()) return false
+        if (!appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_UWB)) {
+            return false
+        }
+        return try {
+            val mgr = uwbManager
+                ?: UwbManager.createInstance(appContext).also { uwbManager = it }
+            installAvailabilityCallbackOnce(mgr)
+            mgr.isAvailable().also { lastKnownUwbAvailable = it }
+        } catch (t: Throwable) {
+            Log.w(tag, "UWB probe failed: ${t.message}")
+            false
         }
     }
 

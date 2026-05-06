@@ -155,6 +155,55 @@ class DeviceCapabilities {
   bool supportsAoa;
 }
 
+/// Snapshot of everything the plugin needs to start ranging.
+///
+/// Returned by [UwbHostApi.checkReadiness]. The host app should branch
+/// on each field and surface the appropriate UI:
+///
+/// ```dart
+/// final r = await uwb.checkReadiness();
+/// if (!r.bluetoothEnabled) promptEnableBluetooth();
+/// else if (!r.permissionsGranted) requestPermissions(r.missingPermissions);
+/// else if (!r.uwbAvailable) showUnsupportedScreen();
+/// else readyToRange();
+/// ```
+class UwbReadiness {
+  UwbReadiness({
+    required this.uwbAvailable,
+    required this.bluetoothEnabled,
+    required this.permissionsGranted,
+    required this.missingPermissions,
+  });
+
+  /// `true` if the device has a UWB radio and the OS allows ranging.
+  /// Mirrors [UwbHostApi.isUwbAvailable] — false on the iOS simulator and
+  /// on devices without UWB hardware.
+  bool uwbAvailable;
+
+  /// `true` if the system Bluetooth radio is powered on. Required for
+  /// OOB discovery / pairing on both platforms.
+  bool bluetoothEnabled;
+
+  /// `true` if every runtime permission the plugin needs has been
+  /// granted. Always `true` on iOS — iOS does not expose a programmatic
+  /// pre-check for `NSBluetoothAlwaysUsageDescription` /
+  /// `NSNearbyInteractionUsageDescription`; the OS prompts on first use.
+  bool permissionsGranted;
+
+  /// Android permission identifiers (`android.permission.*`) the plugin
+  /// needs but the user has not granted yet. Empty on iOS. Pass these
+  /// directly to your permission package — for example with
+  /// `permission_handler`:
+  ///
+  /// ```dart
+  /// final perms = r.missingPermissions
+  ///     .map(Permission.byValue)
+  ///     .toList();
+  /// await perms.request();
+  /// ```
+  List<String?> missingPermissions;
+}
+
 class RangingSample {
   RangingSample({
     required this.deviceId,
@@ -217,6 +266,13 @@ abstract class UwbHostApi {
   /// Android-only fields are empty on iOS).
   @async
   DeviceCapabilities getDeviceCapabilities();
+
+  /// One-shot check of everything the plugin needs to start ranging:
+  /// UWB hardware, Bluetooth state, runtime permissions. The host app
+  /// uses this to drive its onboarding flow before calling
+  /// [startDiscovery] / [startRanging].
+  @async
+  UwbReadiness checkReadiness();
 }
 
 /// Callbacks from the host platform up to Dart.

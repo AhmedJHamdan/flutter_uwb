@@ -15,6 +15,7 @@ export 'src/pigeon/uwb.g.dart'
         TokenPayload,
         UwbDevice,
         UwbErrorCode,
+        UwbReadiness,
         UwbRole;
 
 /// Thrown by [FlutterUwb] when a platform operation fails.
@@ -253,6 +254,24 @@ class FlutterUwb {
   Future<DeviceCapabilities> getDeviceCapabilities() =>
       _api.getDeviceCapabilities();
 
+  /// One-shot check of UWB hardware, Bluetooth state, and runtime
+  /// permissions. Use this before [startDiscovery] / [startRanging] to
+  /// drive an onboarding flow:
+  ///
+  /// ```dart
+  /// final r = await uwb.checkReadiness();
+  /// if (!r.bluetoothEnabled) showEnableBluetoothPrompt();
+  /// else if (!r.permissionsGranted) requestPermissions(r.missingPermissions);
+  /// else if (!r.uwbAvailable) showUnsupportedScreen();
+  /// else readyToRange();
+  /// ```
+  ///
+  /// Does not request permissions — the host app keeps that responsibility
+  /// (typically via `permission_handler`). On iOS, [UwbReadiness.permissionsGranted]
+  /// is always `true` and [UwbReadiness.missingPermissions] is empty;
+  /// iOS prompts on first use rather than exposing a query API.
+  Future<UwbReadiness> checkReadiness() => _api.checkReadiness();
+
   /// Stop the active UWB ranging session and release platform resources.
   ///
   /// Throws [UwbException] on failure.
@@ -386,4 +405,5 @@ Future<void> startRanging(String deviceId, {RangingOptions? options}) =>
     FlutterUwb.instance.startRanging(deviceId, options: options);
 Future<DeviceCapabilities> getDeviceCapabilities() =>
     FlutterUwb.instance.getDeviceCapabilities();
+Future<UwbReadiness> checkReadiness() => FlutterUwb.instance.checkReadiness();
 Future<void> stopRanging() => FlutterUwb.instance.stopRanging();

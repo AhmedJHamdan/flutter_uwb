@@ -333,6 +333,77 @@ data class DeviceCapabilities (
   }
 }
 
+/**
+ * Snapshot of everything the plugin needs to start ranging.
+ *
+ * Returned by [UwbHostApi.checkReadiness]. The host app should branch
+ * on each field and surface the appropriate UI:
+ *
+ * ```dart
+ * final r = await uwb.checkReadiness();
+ * if (!r.bluetoothEnabled) promptEnableBluetooth();
+ * else if (!r.permissionsGranted) requestPermissions(r.missingPermissions);
+ * else if (!r.uwbAvailable) showUnsupportedScreen();
+ * else readyToRange();
+ * ```
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class UwbReadiness (
+  /**
+   * `true` if the device has a UWB radio and the OS allows ranging.
+   * Mirrors [UwbHostApi.isUwbAvailable] — false on the iOS simulator and
+   * on devices without UWB hardware.
+   */
+  val uwbAvailable: Boolean,
+  /**
+   * `true` if the system Bluetooth radio is powered on. Required for
+   * OOB discovery / pairing on both platforms.
+   */
+  val bluetoothEnabled: Boolean,
+  /**
+   * `true` if every runtime permission the plugin needs has been
+   * granted. Always `true` on iOS — iOS does not expose a programmatic
+   * pre-check for `NSBluetoothAlwaysUsageDescription` /
+   * `NSNearbyInteractionUsageDescription`; the OS prompts on first use.
+   */
+  val permissionsGranted: Boolean,
+  /**
+   * Android permission identifiers (`android.permission.*`) the plugin
+   * needs but the user has not granted yet. Empty on iOS. Pass these
+   * directly to your permission package — for example with
+   * `permission_handler`:
+   *
+   * ```dart
+   * final perms = r.missingPermissions
+   *     .map(Permission.byValue)
+   *     .toList();
+   * await perms.request();
+   * ```
+   */
+  val missingPermissions: List<String?>
+
+) {
+  companion object {
+    @Suppress("UNCHECKED_CAST")
+    fun fromList(list: List<Any?>): UwbReadiness {
+      val uwbAvailable = list[0] as Boolean
+      val bluetoothEnabled = list[1] as Boolean
+      val permissionsGranted = list[2] as Boolean
+      val missingPermissions = list[3] as List<String?>
+      return UwbReadiness(uwbAvailable, bluetoothEnabled, permissionsGranted, missingPermissions)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf<Any?>(
+      uwbAvailable,
+      bluetoothEnabled,
+      permissionsGranted,
+      missingPermissions,
+    )
+  }
+}
+
 /** Generated class from Pigeon that represents data sent in messages. */
 data class RangingSample (
   val deviceId: String,
@@ -395,6 +466,11 @@ private object UwbHostApiCodec : StandardMessageCodec() {
       }
       133.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
+          UwbReadiness.fromList(it)
+        }
+      }
+      134.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
           VoidResult.fromList(it)
         }
       }
@@ -423,8 +499,12 @@ private object UwbHostApiCodec : StandardMessageCodec() {
         stream.write(132)
         writeValue(stream, value.toList())
       }
-      is VoidResult -> {
+      is UwbReadiness -> {
         stream.write(133)
+        writeValue(stream, value.toList())
+      }
+      is VoidResult -> {
+        stream.write(134)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -462,6 +542,13 @@ interface UwbHostApi {
    * Android-only fields are empty on iOS).
    */
   fun getDeviceCapabilities(callback: (Result<DeviceCapabilities>) -> Unit)
+  /**
+   * One-shot check of everything the plugin needs to start ranging:
+   * UWB hardware, Bluetooth state, runtime permissions. The host app
+   * uses this to drive its onboarding flow before calling
+   * [startDiscovery] / [startRanging].
+   */
+  fun checkReadiness(callback: (Result<UwbReadiness>) -> Unit)
 
   companion object {
     /** The codec used by UwbHostApi. */
@@ -697,6 +784,24 @@ interface UwbHostApi {
         if (api != null) {
           channel.setMessageHandler { _, reply ->
             api.getDeviceCapabilities() { result: Result<DeviceCapabilities> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.checkReadiness", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            api.checkReadiness() { result: Result<UwbReadiness> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(wrapError(error))
