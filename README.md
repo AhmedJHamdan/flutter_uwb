@@ -13,7 +13,7 @@
 ## <img src="assets/brand/flutter_uwb_pulse.svg" width="20" align="left"/> Features
 
 - **Distance + direction** — centimeter-level distance and azimuth/elevation when the hardware supports it.
-- **No signalling server** — peers discover each other over BLE / MultipeerConnectivity; the plugin handles UWB token exchange end-to-end.
+- **Discovery + pairing built in** — peers find each other over BLE / MultipeerConnectivity, and the plugin runs the UWB token exchange end-to-end. No QR codes, no hand-rolled signalling.
 - **One Dart API, two platforms** — same surface for Android (`androidx.core.uwb`) and iOS (`NearbyInteraction`).
 - **Apple FiRa accessories** — talk to Qorvo, NXP, and other certified UWB tags from iOS out of the box.
 - **End-to-end encrypted** — every Android↔Android session uses a fresh per-pair key; iOS rides Apple's protected discovery channels.
