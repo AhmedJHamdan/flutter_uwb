@@ -118,6 +118,47 @@ enum class UwbErrorCode(val raw: Int) {
   }
 }
 
+/**
+ * Discriminator for [AccessoryHandshakeEvent.kind].
+ *
+ * Pigeon doesn't support sealed unions, so [AccessoryHandshakeEvent] is
+ * a flat struct with a [kind] code and optional [bytes]/[errorMessage]
+ * fields populated per kind.
+ */
+enum class AccessoryHandshakeEventKind(val raw: Int) {
+  /**
+   * BLE connection ready, notifications subscribed. The adapter's
+   * `handshake` callback is dispatched right after this event.
+   */
+  CONNECTED(0),
+  /**
+   * Inbound bytes from the accessory's notify characteristic.
+   * [AccessoryHandshakeEvent.bytes] carries the frame.
+   */
+  NOTIFYBYTES(1),
+  /**
+   * Transport-level error (write failed, GATT timeout, etc.).
+   * [AccessoryHandshakeEvent.errorMessage] carries the platform message.
+   */
+  TRANSPORTERROR(2),
+  /**
+   * Peer disconnected. The adapter's pending Future fails with a
+   * transport error.
+   */
+  DISCONNECTED(3),
+  /**
+   * `stopRanging` was called while the adapter was still running.
+   * The adapter should cancel its work and return.
+   */
+  STOPREQUESTED(4);
+
+  companion object {
+    fun ofRaw(raw: Int): AccessoryHandshakeEventKind? {
+      return values().firstOrNull { it.raw == raw }
+    }
+  }
+}
+
 /** Generated class from Pigeon that represents data sent in messages. */
 data class UwbDevice (
   val id: String,
@@ -435,6 +476,113 @@ data class RangingSample (
   }
 }
 
+/**
+ * FiRa session parameters returned by an [AccessoryAdapter] handshake.
+ *
+ * The plugin uses these to open a Jetpack `controllerSessionScope()` (or
+ * `controleeSessionScope()` if [roleIsController] is false) and start a
+ * FiRa ranging session. Android-only in v1.
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class FiraSessionParams (
+  /** FiRa session id (32-bit). Both ends must agree. */
+  val sessionId: Long,
+  /** FiRa channel number (5, 9, etc.). */
+  val channel: Long,
+  /** FiRa preamble code index (BPRF set: 9–12). */
+  val preambleIndex: Long,
+  /**
+   * Slot duration in ms. Jetpack accepts {1, 2}; android.ranging on
+   * Android 16+ accepts arbitrary ints. Slot duration ≥ 3 ms requires
+   * Android 16+; earlier OS versions fail the handshake with a clear
+   * "slot duration unsupported on this Android version" message.
+   */
+  val slotDurationMs: Long,
+  /** Slots per ranging round (FiRa default 6 for `CONFIG_UNICAST_DS_TWR`). */
+  val slotsPerRangingRound: Long,
+  /** Ranging interval in ms. */
+  val rangingIntervalMs: Long,
+  /**
+   * 8-byte FiRa Static-STS sessionKeyInfo. Layout =
+   * `vendorId(2B) || stsIv(6B)` for `CONFIG_UNICAST_DS_TWR`.
+   */
+  val sessionKeyInfo: ByteArray,
+  /**
+   * Peer's 2-byte short address, MSB-first (matches
+   * `androidx.core.uwb.UwbAddress` byte order).
+   */
+  val peerShortAddress: ByteArray,
+  /**
+   * `true` when Android plays the controller (host) role; `false` when
+   * Android plays the controlee. v1 adapters always set this to `true`.
+   */
+  val roleIsController: Boolean,
+  /** Reserved for a future iOS adapter framework; ignored on Android. */
+  val appleShareableConfig: ByteArray? = null
+
+) {
+  companion object {
+    @Suppress("UNCHECKED_CAST")
+    fun fromList(list: List<Any?>): FiraSessionParams {
+      val sessionId = list[0].let { if (it is Int) it.toLong() else it as Long }
+      val channel = list[1].let { if (it is Int) it.toLong() else it as Long }
+      val preambleIndex = list[2].let { if (it is Int) it.toLong() else it as Long }
+      val slotDurationMs = list[3].let { if (it is Int) it.toLong() else it as Long }
+      val slotsPerRangingRound = list[4].let { if (it is Int) it.toLong() else it as Long }
+      val rangingIntervalMs = list[5].let { if (it is Int) it.toLong() else it as Long }
+      val sessionKeyInfo = list[6] as ByteArray
+      val peerShortAddress = list[7] as ByteArray
+      val roleIsController = list[8] as Boolean
+      val appleShareableConfig = list[9] as ByteArray?
+      return FiraSessionParams(sessionId, channel, preambleIndex, slotDurationMs, slotsPerRangingRound, rangingIntervalMs, sessionKeyInfo, peerShortAddress, roleIsController, appleShareableConfig)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf<Any?>(
+      sessionId,
+      channel,
+      preambleIndex,
+      slotDurationMs,
+      slotsPerRangingRound,
+      rangingIntervalMs,
+      sessionKeyInfo,
+      peerShortAddress,
+      roleIsController,
+      appleShareableConfig,
+    )
+  }
+}
+
+/**
+ * Native → Dart event during an accessory adapter handshake.
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class AccessoryHandshakeEvent (
+  val kind: AccessoryHandshakeEventKind,
+  val bytes: ByteArray? = null,
+  val errorMessage: String? = null
+
+) {
+  companion object {
+    @Suppress("UNCHECKED_CAST")
+    fun fromList(list: List<Any?>): AccessoryHandshakeEvent {
+      val kind = AccessoryHandshakeEventKind.ofRaw(list[0] as Int)!!
+      val bytes = list[1] as ByteArray?
+      val errorMessage = list[2] as String?
+      return AccessoryHandshakeEvent(kind, bytes, errorMessage)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf<Any?>(
+      kind.raw,
+      bytes,
+      errorMessage,
+    )
+  }
+}
+
 @Suppress("UNCHECKED_CAST")
 private object UwbHostApiCodec : StandardMessageCodec() {
   override fun readValueOfType(type: Byte, buffer: ByteBuffer): Any? {
@@ -451,25 +599,30 @@ private object UwbHostApiCodec : StandardMessageCodec() {
       }
       130.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          RangingOptions.fromList(it)
+          FiraSessionParams.fromList(it)
         }
       }
       131.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          TokenPayload.fromList(it)
+          RangingOptions.fromList(it)
         }
       }
       132.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          UwbDevice.fromList(it)
+          TokenPayload.fromList(it)
         }
       }
       133.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          UwbReadiness.fromList(it)
+          UwbDevice.fromList(it)
         }
       }
       134.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          UwbReadiness.fromList(it)
+        }
+      }
+      135.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           VoidResult.fromList(it)
         }
@@ -487,24 +640,28 @@ private object UwbHostApiCodec : StandardMessageCodec() {
         stream.write(129)
         writeValue(stream, value.toList())
       }
-      is RangingOptions -> {
+      is FiraSessionParams -> {
         stream.write(130)
         writeValue(stream, value.toList())
       }
-      is TokenPayload -> {
+      is RangingOptions -> {
         stream.write(131)
         writeValue(stream, value.toList())
       }
-      is UwbDevice -> {
+      is TokenPayload -> {
         stream.write(132)
         writeValue(stream, value.toList())
       }
-      is UwbReadiness -> {
+      is UwbDevice -> {
         stream.write(133)
         writeValue(stream, value.toList())
       }
-      is VoidResult -> {
+      is UwbReadiness -> {
         stream.write(134)
+        writeValue(stream, value.toList())
+      }
+      is VoidResult -> {
+        stream.write(135)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -549,6 +706,37 @@ interface UwbHostApi {
    * [startDiscovery] / [startRanging].
    */
   fun checkReadiness(callback: (Result<UwbReadiness>) -> Unit)
+  /**
+   * Push the current set of vendor tags Dart has registered an
+   * [AccessoryAdapter] for. The Android dispatcher uses this to route
+   * `accessory:<vendorTag>` `startRanging` calls through the
+   * Dart-driven path; iOS throws `unsupported`.
+   */
+  fun setRegisteredAdapterTags(vendorTags: List<String>, callback: (Result<VoidResult>) -> Unit)
+  /**
+   * Open the BLE handshake link for [deviceId] and start emitting
+   * [UwbFlutterApi.onAccessoryHandshakeEvent] events. The adapter's
+   * `handshake` callback runs on the Dart side and writes back via
+   * [accessoryProtocolWrite] / [completeAccessoryHandshake] /
+   * [failAccessoryHandshake]. Android-only.
+   */
+  fun beginAccessoryHandshake(deviceId: String, callback: (Result<VoidResult>) -> Unit)
+  /**
+   * Adapter → accessory bytes. Goes to the matched profile's `rxUuid`
+   * characteristic on the open BLE GATT client. Android-only.
+   */
+  fun accessoryProtocolWrite(deviceId: String, bytes: ByteArray, callback: (Result<VoidResult>) -> Unit)
+  /**
+   * Adapter delivers the FiRa params it negotiated; the plugin opens
+   * a `controllerSessionScope()` (or `controleeSessionScope()`) and
+   * starts the UWB session. Android-only.
+   */
+  fun completeAccessoryHandshake(deviceId: String, params: FiraSessionParams, callback: (Result<VoidResult>) -> Unit)
+  /**
+   * Adapter signals a handshake failure; the plugin tears down the
+   * strategy and emits [UwbFlutterApi.onRangingError]. Android-only.
+   */
+  fun failAccessoryHandshake(deviceId: String, message: String, callback: (Result<VoidResult>) -> Unit)
 
   companion object {
     /** The codec used by UwbHostApi. */
@@ -815,6 +1003,109 @@ interface UwbHostApi {
           channel.setMessageHandler(null)
         }
       }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.setRegisteredAdapterTags", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val vendorTagsArg = args[0] as List<String>
+            api.setRegisteredAdapterTags(vendorTagsArg) { result: Result<VoidResult> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.beginAccessoryHandshake", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val deviceIdArg = args[0] as String
+            api.beginAccessoryHandshake(deviceIdArg) { result: Result<VoidResult> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.accessoryProtocolWrite", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val deviceIdArg = args[0] as String
+            val bytesArg = args[1] as ByteArray
+            api.accessoryProtocolWrite(deviceIdArg, bytesArg) { result: Result<VoidResult> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.completeAccessoryHandshake", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val deviceIdArg = args[0] as String
+            val paramsArg = args[1] as FiraSessionParams
+            api.completeAccessoryHandshake(deviceIdArg, paramsArg) { result: Result<VoidResult> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.failAccessoryHandshake", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val deviceIdArg = args[0] as String
+            val messageArg = args[1] as String
+            api.failAccessoryHandshake(deviceIdArg, messageArg) { result: Result<VoidResult> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
     }
   }
 }
@@ -824,20 +1115,25 @@ private object UwbFlutterApiCodec : StandardMessageCodec() {
     return when (type) {
       128.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          RangingError.fromList(it)
+          AccessoryHandshakeEvent.fromList(it)
         }
       }
       129.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          RangingSample.fromList(it)
+          RangingError.fromList(it)
         }
       }
       130.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          TokenPayload.fromList(it)
+          RangingSample.fromList(it)
         }
       }
       131.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          TokenPayload.fromList(it)
+        }
+      }
+      132.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           UwbDevice.fromList(it)
         }
@@ -847,20 +1143,24 @@ private object UwbFlutterApiCodec : StandardMessageCodec() {
   }
   override fun writeValue(stream: ByteArrayOutputStream, value: Any?)   {
     when (value) {
-      is RangingError -> {
+      is AccessoryHandshakeEvent -> {
         stream.write(128)
         writeValue(stream, value.toList())
       }
-      is RangingSample -> {
+      is RangingError -> {
         stream.write(129)
         writeValue(stream, value.toList())
       }
-      is TokenPayload -> {
+      is RangingSample -> {
         stream.write(130)
         writeValue(stream, value.toList())
       }
-      is UwbDevice -> {
+      is TokenPayload -> {
         stream.write(131)
+        writeValue(stream, value.toList())
+      }
+      is UwbDevice -> {
+        stream.write(132)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -960,6 +1260,26 @@ class UwbFlutterApi(private val binaryMessenger: BinaryMessenger) {
     val channelName = "dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onIncomingRequest"
     val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
     channel.send(listOf(deviceArg, peerTokenArg)) {
+      if (it is List<*>) {
+        if (it.size > 1) {
+          callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))
+        } else {
+          callback(Result.success(Unit))
+        }
+      } else {
+        callback(Result.failure(createConnectionError(channelName)))
+      } 
+    }
+  }
+  /**
+   * Native → Dart events during an accessory adapter handshake. Routed
+   * to the `_AdapterRunner` Dart-side which fans them into the right
+   * adapter's `AccessoryConnection`. Android-only.
+   */
+  fun onAccessoryHandshakeEvent(deviceIdArg: String, eventArg: AccessoryHandshakeEvent, callback: (Result<Unit>) -> Unit) {
+    val channelName = "dev.flutter.pigeon.flutter_uwb.UwbFlutterApi.onAccessoryHandshakeEvent"
+    val channel = BasicMessageChannel<Any?>(binaryMessenger, channelName, codec)
+    channel.send(listOf(deviceIdArg, eventArg)) {
       if (it is List<*>) {
         if (it.size > 1) {
           callback(Result.failure(FlutterError(it[0] as String, it[1] as String, it[2] as String?)))

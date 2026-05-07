@@ -17,6 +17,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"  tools:targetApi="s"/>
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"    tools:targetApi="s"/>
 
-    <!-- Android 14+ UWB permission -->
+    <!-- Android 14+ UWB permission (legacy android.uwb.* surface) -->
     <uses-permission android:name="android.permission.UWB_RANGING"          tools:targetApi="33"/>
+
+    <!-- Android 16+ unified ranging permission (android.ranging.* surface) -->
+    <uses-permission android:name="android.permission.RANGING"              tools:targetApi="36"/>
 </manifest>

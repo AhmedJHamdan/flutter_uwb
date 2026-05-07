@@ -82,6 +82,90 @@ object AppleProtocol {
         if (bytes.size <= 1) ByteArray(0) else bytes.copyOfRange(1, bytes.size)
 
     /**
+     * Build the 30-byte `AppleUWBConfigData` blob the host (controller)
+     * sends inside [MessageId.ConfigureAndStart] (0x0B).
+     *
+     * The controller side of `ConfigureAndStart` is the inverse of the
+     * controlee side handled by [parseAppleUWBConfigData]. Field offsets
+     * mirror the parser so a round-trip produces a structurally
+     * identical blob — verified by [parseAppleUWBConfigData] in tests.
+     *
+     * Bytes 0..6 are an Apple-NI middleware header that the iPhone
+     * populates with U1-side identifiers; the values used here are taken
+     * verbatim from a live iPhone↔Qorvo capture
+     * (`docs/agents/research/2026-05-03-apple-uwb-config-data-decoded.md`).
+     * Qorvo's reference firmware accepts them so that's what we send.
+     *
+     * @param sessionId         FiRa session id (32-bit, LE).
+     * @param channel           FiRa channel number (5, 9, etc.).
+     * @param preambleIndex     FiRa preamble code index (BPRF set: 9–12).
+     * @param slotsPerRound     Slots per ranging round (FiRa default 6).
+     * @param slotDurationRstu  Slot duration in RSTU (2400 = 2 ms,
+     *                          3600 = 3 ms; Jetpack only supports
+     *                          {1200, 2400}).
+     * @param rangingIntervalMs Ranging interval in ms; must be a
+     *                          multiple of `slotsPerRound *
+     *                          slotDurationRstu / 1200` for the chip to
+     *                          accept the START_RANGING command.
+     * @param stsIv             6-byte Static-STS initialisation vector.
+     * @param controllerShortAddress Controller's 2-byte short address —
+     *                          MSB-first as `UwbAddress.address`. Sent
+     *                          to the accessory as the FiRa peer.
+     */
+    fun buildAppleUWBConfigData(
+        sessionId: Int,
+        channel: Int,
+        preambleIndex: Int,
+        slotsPerRound: Int,
+        slotDurationRstu: Int,
+        rangingIntervalMs: Int,
+        stsIv: ByteArray,
+        controllerShortAddress: ByteArray,
+    ): ByteArray {
+        require(stsIv.size == 6) {
+            "stsIv must be 6 bytes, got ${stsIv.size}"
+        }
+        require(controllerShortAddress.size >= 2) {
+            "controllerShortAddress must be at least 2 bytes, got " +
+                "${controllerShortAddress.size}"
+        }
+        val out = ByteArray(30)
+
+        // bytes 0..6 — NI middleware header. Verbatim from iPhone capture.
+        out[0] = 0x01; out[1] = 0x00            // spec major
+        out[2] = 0x01; out[3] = 0x00            // spec minor
+        out[4] = 0x19.toByte()                  // header byte 4
+        out[5] = 0x45                           // header byte 5
+        out[6] = 0x55                           // header byte 6
+
+        val buf = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(7, sessionId)
+        out[11] = (preambleIndex and 0xFF).toByte()
+        out[12] = (channel and 0xFF).toByte()
+        buf.putShort(13, (slotsPerRound and 0xFFFF).toShort())
+        buf.putShort(15, (slotDurationRstu and 0xFFFF).toShort())
+        buf.putShort(17, (rangingIntervalMs and 0xFFFF).toShort())
+        // byte 19 — FiRa rframe_config. 0x03 (SP3 / Static-STS) matches
+        // every iPhone capture and Qorvo's accessory firmware default.
+        out[19] = 0x03
+
+        System.arraycopy(stsIv, 0, out, 20, 6)
+
+        // Peer short address LE on the wire. UwbAddress carries it
+        // MSB-first, so swap.
+        out[26] = controllerShortAddress[1]
+        out[27] = controllerShortAddress[0]
+
+        // bytes 28..29 — trailer. iPhone captures show 0xC8 0x00; the
+        // accessory firmware does not appear to validate the value, but
+        // mirroring it keeps the blob byte-identical to a real Apple frame.
+        out[28] = 0xC8.toByte()
+        out[29] = 0x00
+
+        return out
+    }
+
+    /**
      * Build an `AccessoryConfigurationData` body per Apple's
      * "Nearby Interaction Accessory Protocol Specification R2", Section 3.4.
      *
@@ -162,6 +246,15 @@ object AppleProtocol {
          */
         val preambleIndex: Int,
         /**
+         * Slot duration in RSTU (1200 RSTU/ms), u16 LE from offsets
+         * 15..16. Apple sends 3600 (= 3 ms) in all observed captures —
+         * this is the value Jetpack's public API can't reach
+         * (`slotDurationMillis ∈ {1, 2}`) and that the new
+         * `android.ranging.*` API on Android 16+ accepts as an arbitrary
+         * int. The Jetpack-based strategy ignores this field.
+         */
+        val slotDurationRstu: Int,
+        /**
          * 6-byte Static-STS initialisation vector, bytes 20..25.
          * Jetpack's `CONFIG_UNICAST_DS_TWR` expects an 8-byte
          * `sessionKeyInfo` formed as `vendorId(2B) || stsIv(6B)` — this
@@ -192,6 +285,10 @@ object AppleProtocol {
         val sessionId = buf.getInt(7)
         val preambleIndex = payload[11].toInt() and 0xFF
         val channel = payload[12].toInt() and 0xFF
+        // Slot duration in RSTU at offsets 15..16, u16 LE. Apple sends
+        // 0x0E10 = 3600 (= 3 ms) in all observed captures.
+        val slotDurationRstu = (payload[15].toInt() and 0xFF) or
+            ((payload[16].toInt() and 0xFF) shl 8)
         val stsIv = payload.copyOfRange(20, 26)
         // dest_address is u16 LE on the wire. UwbAddress takes the bytes
         // in MSB-first order, so swap.
@@ -200,6 +297,7 @@ object AppleProtocol {
             sessionId = sessionId,
             channel = channel,
             preambleIndex = preambleIndex,
+            slotDurationRstu = slotDurationRstu,
             stsIv = stsIv,
             peerShortAddress = peerShortAddress,
             raw = payload.copyOfRange(0, 30),

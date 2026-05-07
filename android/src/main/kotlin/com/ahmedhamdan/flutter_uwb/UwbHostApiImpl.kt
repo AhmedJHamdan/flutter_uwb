@@ -14,8 +14,13 @@ import java.util.concurrent.Executors
 import com.ahmedhamdan.flutter_uwb.oob.BleOob
 import com.ahmedhamdan.flutter_uwb.oob.OobCapability
 import com.ahmedhamdan.flutter_uwb.oob.TokenStore
+import com.ahmedhamdan.flutter_uwb.strategy.AccessoryControleeStrategy
+import com.ahmedhamdan.flutter_uwb.strategy.AccessoryControllerStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidControleeStrategy
+import com.ahmedhamdan.flutter_uwb.strategy.AndroidControleeStrategyRanging
+import com.ahmedhamdan.flutter_uwb.strategy.AndroidControllerStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidPeerStrategy
+import com.ahmedhamdan.flutter_uwb.strategy.AndroidStaticPairStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.RangingStrategy
 import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
@@ -67,6 +72,27 @@ class UwbHostApiImpl(
     private var activeStrategy: RangingStrategy? = null
 
     /**
+     * Whether the Android 16+ `android.ranging.*` API is reachable.
+     * True iff SDK ≥ 36 AND the runtime exposes a non-null
+     * `RangingManager` system service (the underlying mainline module
+     * may be absent on some pre-GA Android 16 builds even though the
+     * SDK level matches).
+     *
+     * Cached at construction; the SDK level can't change at runtime
+     * and re-querying the system service per call is wasteful.
+     */
+    private val rangingApiAvailable: Boolean by lazy {
+        if (Build.VERSION.SDK_INT < 36) {
+            false
+        } else try {
+            appContext.getSystemService(android.ranging.RangingManager::class.java) != null
+        } catch (t: Throwable) {
+            Log.w(tag, "RangingManager probe failed: ${t.message}")
+            false
+        }
+    }
+
+    /**
      * Cached UWB availability, fed by [UwbAvailabilityCallback]. Surfaced
      * to Dart through the session-state stream.
      */
@@ -87,7 +113,10 @@ class UwbHostApiImpl(
                 val platform = OobCapability.toAndroidPlatform(capability)
                 val device = UwbDevice(id = id, name = name, platform = platform)
                 discovered[id] = device
-                if (isNew) flutterApi.onDeviceFound(device) {}
+                // BleOob callbacks fire on the BLE scanner / GATT-server
+                // executor (binder threads on Android). Pigeon FlutterApi
+                // calls require @UiThread; route through mainScope.
+                if (isNew) mainScope.launch { flutterApi.onDeviceFound(device) {} }
             }
             override fun onIncomingRequest(id: String, name: String) {
                 Log.d(tag, "Incoming BLE request from $name")
@@ -98,7 +127,7 @@ class UwbHostApiImpl(
             override fun onDisconnected(id: String, name: String) {
                 Log.d(tag, "BLE disconnected $name")
                 if (discovered.remove(id) != null) {
-                    flutterApi.onDeviceLost(id) {}
+                    mainScope.launch { flutterApi.onDeviceLost(id) {} }
                 }
                 val s = activeStrategy
                 if (s?.deviceId == id) {
@@ -133,14 +162,20 @@ class UwbHostApiImpl(
                 val isNew = existing == null
                 val device = UwbDevice(id = id, name = name, platform = platform)
                 discovered[id] = device
-                if (isNew) flutterApi.onDeviceFound(device) {}
+                if (isNew) mainScope.launch { flutterApi.onDeviceFound(device) {} }
 
                 // Route the bytes to the active controlee strategy.
                 // iOS uses random resolvable private addresses that may
                 // not match the MAC the user originally tapped, so we
                 // re-target the strategy to whichever central is now
                 // driving the Apple-FiRa exchange.
-                val s = activeStrategy as? AndroidControleeStrategy ?: run {
+                //
+                // The cast targets the AccessoryControleeStrategy
+                // sub-interface so both implementations
+                // (AndroidControleeStrategy / Jetpack and
+                // AndroidControleeStrategyRanging / android.ranging)
+                // are dispatched to here.
+                val s = activeStrategy as? AccessoryControleeStrategy ?: run {
                     Log.w(this@UwbHostApiImpl.tag, "onAccessoryRequest: no active controlee strategy for $id")
                     return
                 }
@@ -150,6 +185,48 @@ class UwbHostApiImpl(
                 }
                 mainScope.launch { s.handleAccessoryRequest(bytes) }
             }
+            override fun onAccessoryAdvertisement(
+                id: String,
+                name: String,
+                serviceUuid: UUID,
+            ) {
+                val key = serviceUuid.toString().uppercase()
+                val vendorTag = registeredProfiles[key]?.vendorTag
+                val platform = if (vendorTag != null) {
+                    "accessory:$vendorTag"
+                } else {
+                    "accessory"
+                }
+                val isNew = !discovered.containsKey(id)
+                val device = UwbDevice(id = id, name = name, platform = platform)
+                discovered[id] = device
+                Log.i(
+                    this@UwbHostApiImpl.tag,
+                    "accessory advert id=$id svc=$serviceUuid platform=$platform",
+                )
+                if (isNew) mainScope.launch { flutterApi.onDeviceFound(device) {} }
+            }
+            override fun onAccessoryNotify(
+                id: String,
+                serviceUuid: UUID,
+                bytes: ByteArray,
+            ) {
+                val s = activeStrategy as? AccessoryControllerStrategy ?: run {
+                    Log.w(
+                        this@UwbHostApiImpl.tag,
+                        "onAccessoryNotify: no active controller strategy for $id",
+                    )
+                    return
+                }
+                if (s.deviceId != id) {
+                    Log.w(
+                        this@UwbHostApiImpl.tag,
+                        "onAccessoryNotify: id=$id mismatch strategyId=${s.deviceId}",
+                    )
+                    return
+                }
+                mainScope.launch { s.handleAccessoryNotify(bytes) }
+            }
         })
     }
 
@@ -157,10 +234,32 @@ class UwbHostApiImpl(
     override fun startDiscovery(localName: String): VoidResult = try {
         ble.setAccessoryProfiles(bleAccessoryProfiles())
         ble.start(localName)
+        seedStaticPairDemoIfReady()
         VoidResult(ok = true)
     } catch (t: Throwable) {
         Log.e(tag, "startDiscovery", t)
         VoidResult(ok = false, error = t.message ?: "startDiscovery error")
+    }
+
+    /**
+     * If the host registered the Qorvo accessory profile, also surface
+     * a synthetic "Qorvo (static demo)" tile so the example app can
+     * exercise the no-BLE [AndroidStaticPairStrategy] against a Qorvo
+     * board running CLI firmware. Hidden when no Qorvo profile is
+     * registered, so other accessories don't see a confusing tile.
+     */
+    private fun seedStaticPairDemoIfReady() {
+        val hasQorvo = registeredProfiles.values.any { it.vendorTag == "qorvo" }
+        if (!hasQorvo) return
+        val id = AndroidStaticPairStrategy.DEVICE_ID
+        if (discovered.containsKey(id)) return
+        val device = UwbDevice(
+            id = id,
+            name = AndroidStaticPairStrategy.DEVICE_NAME,
+            platform = AndroidStaticPairStrategy.DEVICE_PLATFORM,
+        )
+        discovered[id] = device
+        mainScope.launch { flutterApi.onDeviceFound(device) {} }
     }
 
     override fun stopDiscovery(): VoidResult = try {
@@ -408,6 +507,14 @@ class UwbHostApiImpl(
         val id = device.id ?: return null
         val platform = device.platform ?: "android"
         return when {
+            platform == AndroidStaticPairStrategy.DEVICE_PLATFORM -> {
+                AndroidStaticPairStrategy(
+                    deviceId = id,
+                    uwbManager = mgr,
+                    flutterApi = flutterApi,
+                    rangingScope = mainScope,
+                )
+            }
             platform == "android" || platform == "ios" -> {
                 val token = TokenStore.getPeer(id)
                 if (token == null || token.isEmpty()) {
@@ -425,13 +532,54 @@ class UwbHostApiImpl(
                 )
             }
             platform == "accessory" || platform.startsWith("accessory:") -> {
-                AndroidControleeStrategy(
-                    initialDeviceId = id,
-                    ble = ble,
-                    uwbManager = mgr,
-                    flutterApi = flutterApi,
-                    rangingScope = mainScope,
-                )
+                // Two distinct accessory paths share the `accessory:*`
+                // platform string:
+                // - `accessory:ios` / bare `accessory` — an iPhone host is
+                //   driving us; we run as controlee, replying to its
+                //   Initialize / ConfigureAndStart writes.
+                // - `accessory:<registered vendorTag>` — we discovered a
+                //   real Apple-FiRa accessory (e.g. Qorvo) advertising
+                //   one of the registered profile UUIDs, so we play the
+                //   host (controller) and drive its Initialize /
+                //   ConfigureAndStart from our side.
+                val vendorTag = if (platform.startsWith("accessory:")) {
+                    platform.removePrefix("accessory:")
+                } else {
+                    null
+                }
+                val isHostMode = vendorTag != null && vendorTag != "ios" &&
+                    registeredProfiles.values.any { it.vendorTag == vendorTag }
+                if (isHostMode) {
+                    AndroidControllerStrategy(
+                        initialDeviceId = id,
+                        ble = ble,
+                        uwbManager = mgr,
+                        flutterApi = flutterApi,
+                        rangingScope = mainScope,
+                    )
+                } else if (rangingApiAvailable) {
+                    // Android 16+ path: arbitrary slot duration via
+                    // android.ranging.* (no Jetpack {1, 2}-ms gate).
+                    // Required for iPhone interop; iPhone NI uses 3 ms.
+                    AndroidControleeStrategyRanging(
+                        initialDeviceId = id,
+                        appContext = appContext,
+                        ble = ble,
+                        flutterApi = flutterApi,
+                        rangingScope = mainScope,
+                    )
+                } else {
+                    // Android 15 and earlier: Jetpack path. Cross-OS
+                    // ranging reaches ACTIVE then drops at the iPhone's
+                    // FW-generated timeout (slot-duration mismatch).
+                    AndroidControleeStrategy(
+                        initialDeviceId = id,
+                        ble = ble,
+                        uwbManager = mgr,
+                        flutterApi = flutterApi,
+                        rangingScope = mainScope,
+                    )
+                }
             }
             else -> null
         }
@@ -510,12 +658,18 @@ class UwbHostApiImpl(
      */
     private fun collectMissingPermissions(): List<String> {
         val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            listOf(
+            mutableListOf(
                 "android.permission.BLUETOOTH_SCAN",
                 "android.permission.BLUETOOTH_CONNECT",
                 "android.permission.BLUETOOTH_ADVERTISE",
                 "android.permission.UWB_RANGING",
-            )
+            ).apply {
+                // Android 16 introduced android.ranging.* and a new unified
+                // RANGING permission. Cross-OS controlee path uses it.
+                if (Build.VERSION.SDK_INT >= 36) {
+                    add("android.permission.RANGING")
+                }
+            }
         } else {
             listOf(
                 "android.permission.BLUETOOTH",
@@ -556,6 +710,66 @@ class UwbHostApiImpl(
             Log.w(tag, "UWB probe failed: ${t.message}")
             false
         }
+    }
+
+    // ---------------- Accessory adapter framework (Phase 1 stubs) ----------------
+    //
+    // Phase 2 wires these to a `DartDrivenAccessoryStrategy`. Until then
+    // they record state needed by the dispatcher (`setRegisteredAdapterTags`)
+    // and short-circuit the rest with a clear error so any premature Dart
+    // call surfaces visibly.
+
+    private var dartAdapterVendorTags: Set<String> = emptySet()
+
+    override fun setRegisteredAdapterTags(
+        vendorTags: List<String>,
+        callback: (Result<VoidResult>) -> Unit,
+    ) {
+        dartAdapterVendorTags = vendorTags.toSet()
+        callback(Result.success(VoidResult(ok = true)))
+    }
+
+    override fun beginAccessoryHandshake(
+        deviceId: String,
+        callback: (Result<VoidResult>) -> Unit,
+    ) {
+        callback(Result.success(VoidResult(
+            ok = false,
+            error = "beginAccessoryHandshake: native side not yet wired",
+        )))
+    }
+
+    override fun accessoryProtocolWrite(
+        deviceId: String,
+        bytes: ByteArray,
+        callback: (Result<VoidResult>) -> Unit,
+    ) {
+        callback(Result.success(VoidResult(
+            ok = false,
+            error = "accessoryProtocolWrite: native side not yet wired",
+        )))
+    }
+
+    override fun completeAccessoryHandshake(
+        deviceId: String,
+        params: FiraSessionParams,
+        callback: (Result<VoidResult>) -> Unit,
+    ) {
+        callback(Result.success(VoidResult(
+            ok = false,
+            error = "completeAccessoryHandshake: native side not yet wired",
+        )))
+    }
+
+    override fun failAccessoryHandshake(
+        deviceId: String,
+        message: String,
+        callback: (Result<VoidResult>) -> Unit,
+    ) {
+        callback(Result.success(VoidResult(
+            ok = false,
+            error = "failAccessoryHandshake: native side not yet wired",
+        )))
     }
 
     fun dispose() {

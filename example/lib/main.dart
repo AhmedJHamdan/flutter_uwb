@@ -251,11 +251,12 @@ class _HomeState extends State<_Home> {
     if (_activeRangingId != null && _activeRangingId != id) {
       await _stopRanging();
     }
-    final isAccessory = device.platform.startsWith('accessory');
+    final skipsTokenExchange = device.platform.startsWith('accessory') ||
+        device.platform.startsWith('static-pair');
     final cameraAssist = _cameraAssist;
     final extendedDistance = _extendedDistance;
     try {
-      if (!isAccessory) {
+      if (!skipsTokenExchange) {
         await _uwb.pairWith(id);
         if (!mounted) return;
       }
@@ -365,7 +366,13 @@ class _HomeState extends State<_Home> {
 
   Widget _buildRangingTab(BuildContext context) {
     final size = MediaQuery.of(context).size;
-    final radarSize = math.min(size.width - 64, 320.0);
+    // First-frame guard: on some Android configs (e.g. Galaxy on Vulkan/
+    // Impeller) MediaQuery.size is Size.zero on the very first build, which
+    // produces SizedBox(width: -64) and trips a downstream
+    // 'child == _child' / Duplicate GlobalKey assertion. Clamp positive.
+    final radarSize = math.min(size.width - 64, 320.0)
+        .clamp(80.0, 320.0)
+        .toDouble();
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
       child: Column(

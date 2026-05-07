@@ -63,6 +63,26 @@ class BleOob(private val ctx: Context) {
             serviceUuid: UUID,
             bytes: ByteArray,
         ) {}
+        /**
+         * A BLE peripheral advertising one of the registered accessory
+         * profile UUIDs has been seen. Surfaced separately from
+         * [onDeviceFound] so the host can tag it as
+         * `accessory:<vendorTag>` and route to the controller strategy.
+         */
+        fun onAccessoryAdvertisement(
+            id: String,
+            name: String,
+            serviceUuid: UUID,
+        ) {}
+        /**
+         * Bytes pushed by an accessory via its `txUuid` (notify)
+         * characteristic on a connection opened with [accessoryConnect].
+         */
+        fun onAccessoryNotify(
+            id: String,
+            serviceUuid: UUID,
+            bytes: ByteArray,
+        ) {}
     }
     private var cb: Callback? = null
     fun setCallback(c: Callback) { cb = c }
@@ -138,6 +158,28 @@ class BleOob(private val ctx: Context) {
     private val pendingCentrals = HashMap<String, BluetoothDevice>()
     private val seenAdvertisers = HashSet<String>()
 
+    /**
+     * Per-discovered-accessory state, populated when a scan hit matches
+     * a registered [AccessoryProfile]. Used by [accessoryConnect] /
+     * [accessoryWrite] / [accessoryDisconnect] to look up the profile
+     * UUIDs without forcing the host to round-trip them back through
+     * Pigeon.
+     */
+    private val accessoryDiscoveryProfiles = HashMap<String, AccessoryProfile>()
+    private val discoveredRemoteDevices = HashMap<String, BluetoothDevice>()
+
+    /** Per-deviceId GATT connection state opened with [accessoryConnect]. */
+    private class AccessoryClientConn(
+        val profile: AccessoryProfile,
+        val onReady: (Boolean) -> Unit,
+    ) {
+        var gatt: BluetoothGatt? = null
+        var rxChar: BluetoothGattCharacteristic? = null
+        var txChar: BluetoothGattCharacteristic? = null
+        val reassembler = BleFramer.Reassembler()
+    }
+    private val accessoryClients = HashMap<String, AccessoryClientConn>()
+
     /** Per-central server-side handshake/key state, keyed by BLE address. */
     private val serverHandshakes = HashMap<String, OobHandshake.LocalKeyPair>()
     private val serverKeys = HashMap<String, OobHandshake.SessionKeys>()
@@ -193,6 +235,15 @@ class BleOob(private val ctx: Context) {
         serverMtus.clear()
         centralModes.clear()
         accessoryServiceByCentral.clear()
+        accessoryDiscoveryProfiles.clear()
+        discoveredRemoteDevices.clear()
+        // Tear down any lingering host-mode accessory connections from a
+        // previous start() — the GATT objects belong to the old session.
+        for (conn in accessoryClients.values) {
+            try { conn.gatt?.disconnect() } catch (_: Throwable) {}
+            try { conn.gatt?.close() } catch (_: Throwable) {}
+        }
+        accessoryClients.clear()
 
         val serverCb = object : BluetoothGattServerCallback() {
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
@@ -385,9 +436,22 @@ class BleOob(private val ctx: Context) {
         )
 
         scanner = a.bluetoothLeScanner
-        Log.i("flutter_uwb", "starting scan for SVC=$SVC")
+        val filters = buildList {
+            add(ScanFilter.Builder().setServiceUuid(ParcelUuid(SVC)).build())
+            for (profile in accessoryProfiles) {
+                add(
+                    ScanFilter.Builder()
+                        .setServiceUuid(ParcelUuid(profile.serviceUuid))
+                        .build(),
+                )
+            }
+        }
+        Log.i(
+            "flutter_uwb",
+            "starting scan SVC=$SVC accessoryProfiles=${accessoryProfiles.size}",
+        )
         scanner?.startScan(
-            listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(SVC)).build()),
+            filters,
             ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
             scanCb,
         )
@@ -401,6 +465,11 @@ class BleOob(private val ctx: Context) {
         clientGatt?.disconnect()
         clientGatt?.close()
         clientGatt = null
+        for (conn in accessoryClients.values) {
+            try { conn.gatt?.disconnect() } catch (_: Throwable) {}
+            try { conn.gatt?.close() } catch (_: Throwable) {}
+        }
+        accessoryClients.clear()
         gattServer?.close()
         gattServer = null
         pendingCentrals.clear()
@@ -412,6 +481,8 @@ class BleOob(private val ctx: Context) {
         serverMtus.clear()
         centralModes.clear()
         accessoryServiceByCentral.clear()
+        accessoryDiscoveryProfiles.clear()
+        discoveredRemoteDevices.clear()
         resetClientState()
         TokenStore.clear()
     }
@@ -461,6 +532,31 @@ class BleOob(private val ctx: Context) {
             val addr = d.address ?: return
             if (!seenAdvertisers.add(addr)) return
             val record = res.scanRecord
+            val advertisedUuids: List<UUID> = record?.serviceUuids
+                ?.map { it.uuid }
+                ?: emptyList()
+
+            // Vendor accessory match: the peer is advertising one of our
+            // registered accessory profile UUIDs (e.g. a Qorvo DWM3001CDK).
+            val matchedProfile = accessoryProfiles.firstOrNull {
+                advertisedUuids.contains(it.serviceUuid)
+            }
+            if (matchedProfile != null) {
+                Log.i(
+                    "flutter_uwb",
+                    "scan accessory addr=$addr name=${deviceNameSafe(d)} " +
+                        "svc=${matchedProfile.serviceUuid}",
+                )
+                accessoryDiscoveryProfiles[addr] = matchedProfile
+                discoveredRemoteDevices[addr] = d
+                cb?.onAccessoryAdvertisement(
+                    addr,
+                    deviceNameSafe(d),
+                    matchedProfile.serviceUuid,
+                )
+                return
+            }
+
             val data = record?.serviceData?.get(ParcelUuid(SVC))
             Log.i("flutter_uwb",
                 "scan hit addr=$addr name=${deviceNameSafe(d)} svcData=${
@@ -510,6 +606,199 @@ class BleOob(private val ctx: Context) {
         serverMtus.remove(deviceId)
         centralModes.remove(deviceId)
         accessoryServiceByCentral.remove(deviceId)
+    }
+
+    /**
+     * Open a long-lived GATT *client* connection to a discovered Apple-FiRa
+     * accessory (e.g. a Qorvo DWM3001CDK). Mirror of iOS `accessoryConnect`.
+     *
+     * Looks up the matched [AccessoryProfile] from the scan-time map
+     * populated by [scanCb]. After the link is up and notifications on
+     * the profile's `txUuid` are subscribed, [onReady] fires with `true`
+     * and subsequent inbound bytes flow through
+     * [Callback.onAccessoryNotify].
+     *
+     * Failure is reported via [onReady] with `false` plus
+     * [Callback.onError]. The host typically tears down the strategy on
+     * failure.
+     */
+    fun accessoryConnect(
+        deviceId: String,
+        onReady: (Boolean) -> Unit,
+    ) {
+        val profile = accessoryDiscoveryProfiles[deviceId] ?: run {
+            onReady(false)
+            cb?.onError("accessoryConnect: $deviceId is not a discovered accessory")
+            return
+        }
+        val a = adapter
+        if (a == null || !BluetoothAdapter.checkBluetoothAddress(deviceId)) {
+            onReady(false)
+            cb?.onError("accessoryConnect: invalid deviceId $deviceId")
+            return
+        }
+        val device = discoveredRemoteDevices[deviceId] ?: a.getRemoteDevice(deviceId)
+        val conn = AccessoryClientConn(profile = profile, onReady = onReady)
+        accessoryClients[deviceId] = conn
+        Log.i("flutter_uwb", "accessoryConnect id=$deviceId svc=${profile.serviceUuid}")
+        conn.gatt = device.connectGatt(ctx, false, accessoryGattCallback(deviceId))
+    }
+
+    /**
+     * Write bytes to the accessory's `rxUuid` characteristic. Apple-protocol
+     * messages are always ≤32 bytes, well under any negotiated MTU; no
+     * framing is applied. Mirror of iOS `accessoryWrite`.
+     */
+    fun accessoryWrite(deviceId: String, bytes: ByteArray) {
+        val conn = accessoryClients[deviceId] ?: run {
+            cb?.onError("accessoryWrite: not ready for $deviceId")
+            return
+        }
+        val rx = conn.rxChar ?: run {
+            cb?.onError("accessoryWrite: no rx char for $deviceId")
+            return
+        }
+        val gatt = conn.gatt ?: run {
+            cb?.onError("accessoryWrite: no gatt for $deviceId")
+            return
+        }
+        Log.i(
+            "flutter_uwb",
+            "accessoryWrite id=$deviceId bytes=${bytes.joinToString("") { "%02X".format(it) }}",
+        )
+        val writeType = if (rx.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) {
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        } else {
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeCharacteristic(rx, bytes, writeType)
+        } else {
+            @Suppress("DEPRECATION")
+            rx.writeType = writeType
+            @Suppress("DEPRECATION")
+            rx.value = bytes
+            @Suppress("DEPRECATION")
+            gatt.writeCharacteristic(rx)
+        }
+    }
+
+    /** Tear down a [accessoryConnect] connection. */
+    fun accessoryDisconnect(deviceId: String) {
+        val conn = accessoryClients.remove(deviceId) ?: return
+        try { conn.gatt?.disconnect() } catch (_: Throwable) {}
+        try { conn.gatt?.close() } catch (_: Throwable) {}
+    }
+
+    private fun accessoryGattCallback(deviceId: String): BluetoothGattCallback =
+        object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                Log.i(
+                    "flutter_uwb",
+                    "accessory onConnectionStateChange id=$deviceId status=$status state=$newState",
+                )
+                when (newState) {
+                    BluetoothProfile.STATE_CONNECTED -> {
+                        if (!gatt.requestMtu(PREFERRED_MTU)) {
+                            gatt.discoverServices()
+                        }
+                    }
+                    BluetoothProfile.STATE_DISCONNECTED -> {
+                        val conn = accessoryClients.remove(deviceId)
+                        try { gatt.close() } catch (_: Throwable) {}
+                        conn?.onReady?.invoke(false)
+                        cb?.onDisconnected(deviceId, deviceNameSafe(gatt.device))
+                    }
+                }
+            }
+
+            override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+                gatt.discoverServices()
+            }
+
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                val conn = accessoryClients[deviceId] ?: return
+                val service = gatt.getService(conn.profile.serviceUuid) ?: run {
+                    failAccessoryConnect(deviceId, "Service ${conn.profile.serviceUuid} not found")
+                    return
+                }
+                val rx = service.getCharacteristic(conn.profile.rxUuid) ?: run {
+                    failAccessoryConnect(deviceId, "Rx char ${conn.profile.rxUuid} not found")
+                    return
+                }
+                val tx = service.getCharacteristic(conn.profile.txUuid) ?: run {
+                    failAccessoryConnect(deviceId, "Tx char ${conn.profile.txUuid} not found")
+                    return
+                }
+                conn.rxChar = rx
+                conn.txChar = tx
+                gatt.setCharacteristicNotification(tx, true)
+                val ccc = tx.getDescriptor(CCCD)
+                if (ccc != null) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeDescriptor(ccc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        ccc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        @Suppress("DEPRECATION")
+                        gatt.writeDescriptor(ccc)
+                    }
+                } else {
+                    // No CCCD — uncommon, but treat as ready.
+                    conn.onReady(true)
+                }
+            }
+
+            override fun onDescriptorWrite(
+                gatt: BluetoothGatt,
+                descriptor: BluetoothGattDescriptor,
+                status: Int,
+            ) {
+                if (descriptor.uuid != CCCD) return
+                val conn = accessoryClients[deviceId] ?: return
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    conn.onReady(true)
+                } else {
+                    failAccessoryConnect(deviceId, "CCCD write failed status=$status")
+                }
+            }
+
+            override fun onCharacteristicChanged(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                value: ByteArray,
+            ) {
+                deliverAccessoryNotify(deviceId, characteristic, value)
+            }
+
+            @Deprecated("Required for API < 33, delegates to the new overload.")
+            @Suppress("DEPRECATION")
+            override fun onCharacteristicChanged(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+            ) {
+                val value = characteristic.value ?: return
+                deliverAccessoryNotify(deviceId, characteristic, value)
+            }
+        }
+
+    private fun deliverAccessoryNotify(
+        deviceId: String,
+        characteristic: BluetoothGattCharacteristic,
+        value: ByteArray,
+    ) {
+        val conn = accessoryClients[deviceId] ?: return
+        if (characteristic.uuid != conn.profile.txUuid) return
+        cb?.onAccessoryNotify(deviceId, conn.profile.serviceUuid, value)
+    }
+
+    private fun failAccessoryConnect(deviceId: String, message: String) {
+        Log.w("flutter_uwb", "accessory $deviceId failed: $message")
+        val conn = accessoryClients.remove(deviceId) ?: return
+        try { conn.gatt?.disconnect() } catch (_: Throwable) {}
+        try { conn.gatt?.close() } catch (_: Throwable) {}
+        conn.onReady(false)
+        cb?.onError(message)
     }
 
     fun exchange(

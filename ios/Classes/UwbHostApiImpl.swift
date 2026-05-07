@@ -318,6 +318,70 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     )))
   }
 
+  // MARK: - Accessory adapter framework (Android-only in v1)
+  //
+  // iOS continues to use the existing hard-coded `IosAccessoryStrategy`
+  // path; the Dart-driven adapter framework is Android-only.
+  // Pigeon's Swift `UwbHostApi` protocol still requires conformance —
+  // each method below throws `unsupported` so iOS callers get a clear
+  // error if they try to use the framework here.
+
+  func setRegisteredAdapterTags(
+    vendorTags: [String],
+    completion: @escaping (Result<VoidResult, Error>) -> Void
+  ) {
+    // Recording the tags on iOS is harmless and avoids spurious errors
+    // on app startup when the Dart side reports a (possibly empty) list.
+    completion(.success(VoidResult(ok: true)))
+  }
+
+  func beginAccessoryHandshake(
+    deviceId: String,
+    completion: @escaping (Result<VoidResult, Error>) -> Void
+  ) {
+    completion(.failure(FlutterError(
+      code: "unsupported",
+      message: "Accessory adapter framework is Android-only in v1",
+      details: nil
+    )))
+  }
+
+  func accessoryProtocolWrite(
+    deviceId: String,
+    bytes: FlutterStandardTypedData,
+    completion: @escaping (Result<VoidResult, Error>) -> Void
+  ) {
+    completion(.failure(FlutterError(
+      code: "unsupported",
+      message: "Accessory adapter framework is Android-only in v1",
+      details: nil
+    )))
+  }
+
+  func completeAccessoryHandshake(
+    deviceId: String,
+    params: FiraSessionParams,
+    completion: @escaping (Result<VoidResult, Error>) -> Void
+  ) {
+    completion(.failure(FlutterError(
+      code: "unsupported",
+      message: "Accessory adapter framework is Android-only in v1",
+      details: nil
+    )))
+  }
+
+  func failAccessoryHandshake(
+    deviceId: String,
+    message: String,
+    completion: @escaping (Result<VoidResult, Error>) -> Void
+  ) {
+    completion(.failure(FlutterError(
+      code: "unsupported",
+      message: "Accessory adapter framework is Android-only in v1",
+      details: nil
+    )))
+  }
+
   func getDeviceCapabilities(
     completion: @escaping (Result<DeviceCapabilities, Error>) -> Void
   ) {

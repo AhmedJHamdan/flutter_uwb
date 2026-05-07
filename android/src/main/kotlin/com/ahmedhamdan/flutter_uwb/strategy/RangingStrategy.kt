@@ -37,3 +37,30 @@ interface RangingStrategy {
      */
     fun stop()
 }
+
+/**
+ * Sub-interface for accessory-mode controlee strategies — strategies
+ * that are driven by inbound BLE writes from an iPhone NI host. The
+ * dispatcher in `UwbHostApiImpl.onAccessoryRequest` casts the active
+ * strategy to this type so it can route bytes to either the Jetpack
+ * implementation ([AndroidControleeStrategy]) on Android < 16 or the
+ * `android.ranging` implementation ([AndroidControleeStrategyRanging])
+ * on Android 16+.
+ */
+interface AccessoryControleeStrategy : RangingStrategy {
+    /**
+     * Update the BLE central id this strategy notifies on. iOS hosts
+     * connect with a random resolvable private address that may not
+     * match the MAC the user originally tapped; the dispatcher calls
+     * this on each inbound write so subsequent `accessoryNotify` calls
+     * go back to the right central.
+     */
+    fun retarget(newDeviceId: String)
+
+    /**
+     * Handle an inbound Apple-protocol message from the iPhone host.
+     * The dispatcher already routed the bytes here; the strategy
+     * decodes the message id and drives its state machine.
+     */
+    suspend fun handleAccessoryRequest(bytes: ByteArray)
+}

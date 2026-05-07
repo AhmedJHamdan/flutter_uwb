@@ -17,10 +17,10 @@ apply plugin: 'kotlin-android'
 
 android {
     namespace "com.ahmedhamdan.flutter_uwb"
-    compileSdk 35
+    compileSdk 36
     defaultConfig {
         minSdk 23
-        targetSdk 35
+        targetSdk 36
     }
     buildTypes { release { minifyEnabled false } }
     compileOptions {

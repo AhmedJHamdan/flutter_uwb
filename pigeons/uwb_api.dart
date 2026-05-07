@@ -220,6 +220,102 @@ class RangingSample {
   int elapsedRealtimeNanos;
 }
 
+/// FiRa session parameters returned by an [AccessoryAdapter] handshake.
+///
+/// The plugin uses these to open a Jetpack `controllerSessionScope()` (or
+/// `controleeSessionScope()` if [roleIsController] is false) and start a
+/// FiRa ranging session. Android-only in v1.
+class FiraSessionParams {
+  FiraSessionParams({
+    required this.sessionId,
+    required this.channel,
+    required this.preambleIndex,
+    required this.slotDurationMs,
+    required this.slotsPerRangingRound,
+    required this.rangingIntervalMs,
+    required this.sessionKeyInfo,
+    required this.peerShortAddress,
+    required this.roleIsController,
+    this.appleShareableConfig,
+  });
+
+  /// FiRa session id (32-bit). Both ends must agree.
+  int sessionId;
+
+  /// FiRa channel number (5, 9, etc.).
+  int channel;
+
+  /// FiRa preamble code index (BPRF set: 9–12).
+  int preambleIndex;
+
+  /// Slot duration in ms. Jetpack accepts {1, 2}; android.ranging on
+  /// Android 16+ accepts arbitrary ints. Slot duration ≥ 3 ms requires
+  /// Android 16+; earlier OS versions fail the handshake with a clear
+  /// "slot duration unsupported on this Android version" message.
+  int slotDurationMs;
+
+  /// Slots per ranging round (FiRa default 6 for `CONFIG_UNICAST_DS_TWR`).
+  int slotsPerRangingRound;
+
+  /// Ranging interval in ms.
+  int rangingIntervalMs;
+
+  /// 8-byte FiRa Static-STS sessionKeyInfo. Layout =
+  /// `vendorId(2B) || stsIv(6B)` for `CONFIG_UNICAST_DS_TWR`.
+  Uint8List sessionKeyInfo;
+
+  /// Peer's 2-byte short address, MSB-first (matches
+  /// `androidx.core.uwb.UwbAddress` byte order).
+  Uint8List peerShortAddress;
+
+  /// `true` when Android plays the controller (host) role; `false` when
+  /// Android plays the controlee. v1 adapters always set this to `true`.
+  bool roleIsController;
+
+  /// Reserved for a future iOS adapter framework; ignored on Android.
+  Uint8List? appleShareableConfig;
+}
+
+/// Discriminator for [AccessoryHandshakeEvent.kind].
+///
+/// Pigeon doesn't support sealed unions, so [AccessoryHandshakeEvent] is
+/// a flat struct with a [kind] code and optional [bytes]/[errorMessage]
+/// fields populated per kind.
+enum AccessoryHandshakeEventKind {
+  /// BLE connection ready, notifications subscribed. The adapter's
+  /// `handshake` callback is dispatched right after this event.
+  connected,
+
+  /// Inbound bytes from the accessory's notify characteristic.
+  /// [AccessoryHandshakeEvent.bytes] carries the frame.
+  notifyBytes,
+
+  /// Transport-level error (write failed, GATT timeout, etc.).
+  /// [AccessoryHandshakeEvent.errorMessage] carries the platform message.
+  transportError,
+
+  /// Peer disconnected. The adapter's pending Future fails with a
+  /// transport error.
+  disconnected,
+
+  /// `stopRanging` was called while the adapter was still running.
+  /// The adapter should cancel its work and return.
+  stopRequested,
+}
+
+/// Native → Dart event during an accessory adapter handshake.
+class AccessoryHandshakeEvent {
+  AccessoryHandshakeEvent({
+    required this.kind,
+    this.bytes,
+    this.errorMessage,
+  });
+
+  AccessoryHandshakeEventKind kind;
+  Uint8List? bytes;
+  String? errorMessage;
+}
+
 @HostApi()
 abstract class UwbHostApi {
   // BLE / OOB discovery
@@ -273,6 +369,42 @@ abstract class UwbHostApi {
   /// [startDiscovery] / [startRanging].
   @async
   UwbReadiness checkReadiness();
+
+  // ---------- Accessory adapter framework (Android-only in v1) ----------
+
+  /// Push the current set of vendor tags Dart has registered an
+  /// [AccessoryAdapter] for. The Android dispatcher uses this to route
+  /// `accessory:<vendorTag>` `startRanging` calls through the
+  /// Dart-driven path; iOS throws `unsupported`.
+  @async
+  VoidResult setRegisteredAdapterTags(List<String> vendorTags);
+
+  /// Open the BLE handshake link for [deviceId] and start emitting
+  /// [UwbFlutterApi.onAccessoryHandshakeEvent] events. The adapter's
+  /// `handshake` callback runs on the Dart side and writes back via
+  /// [accessoryProtocolWrite] / [completeAccessoryHandshake] /
+  /// [failAccessoryHandshake]. Android-only.
+  @async
+  VoidResult beginAccessoryHandshake(String deviceId);
+
+  /// Adapter → accessory bytes. Goes to the matched profile's `rxUuid`
+  /// characteristic on the open BLE GATT client. Android-only.
+  @async
+  VoidResult accessoryProtocolWrite(String deviceId, Uint8List bytes);
+
+  /// Adapter delivers the FiRa params it negotiated; the plugin opens
+  /// a `controllerSessionScope()` (or `controleeSessionScope()`) and
+  /// starts the UWB session. Android-only.
+  @async
+  VoidResult completeAccessoryHandshake(
+    String deviceId,
+    FiraSessionParams params,
+  );
+
+  /// Adapter signals a handshake failure; the plugin tears down the
+  /// strategy and emits [UwbFlutterApi.onRangingError]. Android-only.
+  @async
+  VoidResult failAccessoryHandshake(String deviceId, String message);
 }
 
 /// Callbacks from the host platform up to Dart.
@@ -284,4 +416,12 @@ abstract class UwbFlutterApi {
   void onPeerLost(String deviceId);
   void onRangingError(String deviceId, RangingError error);
   void onIncomingRequest(UwbDevice device, TokenPayload peerToken);
+
+  /// Native → Dart events during an accessory adapter handshake. Routed
+  /// to the `_AdapterRunner` Dart-side which fans them into the right
+  /// adapter's `AccessoryConnection`. Android-only.
+  void onAccessoryHandshakeEvent(
+    String deviceId,
+    AccessoryHandshakeEvent event,
+  );
 }

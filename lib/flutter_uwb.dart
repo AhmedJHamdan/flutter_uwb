@@ -1,7 +1,23 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'src/pigeon/uwb.g.dart';
+import 'src/accessory/_adapter_registry.dart';
+import 'src/accessory/_adapter_runner.dart';
+import 'src/accessory/accessory_adapter.dart';
+// `accessory_adapter.dart` re-exports `AccessoryHandshakeEvent`,
+// `AccessoryHandshakeEventKind`, and `FiraSessionParams` as typedefs over
+// the Pigeon-generated types. Hide them here to keep a single canonical
+// name in scope for this library's references.
+import 'src/pigeon/uwb.g.dart'
+    hide AccessoryHandshakeEvent, AccessoryHandshakeEventKind, FiraSessionParams;
+
+export 'src/accessory/accessory_adapter.dart'
+    show
+        AccessoryAdapter,
+        AccessoryConnection,
+        AccessoryHandshakeEvent,
+        AccessoryHandshakeEventKind,
+        FiraSessionParams;
 
 export 'src/log.dart' show UwbLog, UwbLogLevel;
 
@@ -54,6 +70,12 @@ class UwbException implements Exception {
 /// for testing with a custom Pigeon binary messenger.
 class FlutterUwb {
   FlutterUwb._() {
+    _adapterRegistry = AdapterRegistry(api: _api);
+    _adapterRunner = AdapterRunner(
+      registry: _adapterRegistry,
+      api: _api,
+      vendorTagFor: _vendorTagForDevice,
+    );
     UwbFlutterApi.setup(_FlutterApiHandler(this));
   }
 
@@ -63,6 +85,20 @@ class FlutterUwb {
   static FlutterUwb get instance => _instance ??= FlutterUwb._();
 
   final UwbHostApi _api = UwbHostApi();
+  late final AdapterRegistry _adapterRegistry;
+  late final AdapterRunner _adapterRunner;
+  final Map<String, UwbDevice> _knownDevices = {};
+
+  /// Resolves the vendor tag for a discovered accessory device. Used by
+  /// [AdapterRunner] to look up the right adapter when the native side
+  /// fires `connected`.
+  String _vendorTagForDevice(String deviceId) {
+    final platform = _knownDevices[deviceId]?.platform ?? '';
+    if (platform.startsWith('accessory:')) {
+      return platform.substring('accessory:'.length);
+    }
+    return '';
+  }
 
   final StreamController<UwbDevice> _deviceFound =
       StreamController<UwbDevice>.broadcast();
@@ -277,6 +313,32 @@ class FlutterUwb {
   /// Throws [UwbException] on failure.
   Future<void> stopRanging() async => _check(await _api.stopRanging());
 
+  // -------- Accessory adapter framework (Android-only in v1) --------
+
+  /// Register a custom [AccessoryAdapter]. The plugin invokes the
+  /// adapter on every `startRanging` against an
+  /// `accessory:<adapter.vendorTag>` device.
+  ///
+  /// Adapter authors typically also call [registerAccessoryProfile]
+  /// with the same vendor tag so the BLE scanner picks up the
+  /// accessory and surfaces it in [deviceFound].
+  ///
+  /// Re-registering with the same vendor tag replaces the previous
+  /// adapter (custom adapters shadow built-ins).
+  ///
+  /// iOS: the adapter is recorded but the native dispatcher continues
+  /// to use the hard-coded `IosAccessoryStrategy`. The framework is
+  /// Android-only in v1.
+  Future<void> registerAccessoryAdapter(AccessoryAdapter adapter) async {
+    _adapterRegistry.register(adapter);
+  }
+
+  /// Remove the adapter previously registered for [vendorTag].
+  /// No-op if no adapter is registered.
+  Future<void> unregisterAccessoryAdapter(String vendorTag) async {
+    _adapterRegistry.unregister(vendorTag);
+  }
+
   /// Tear down the plugin's Dart-side resources: closes all broadcast
   /// streams and detaches the Pigeon flutter-api handler.
   ///
@@ -323,12 +385,14 @@ class _FlutterApiHandler extends UwbFlutterApi {
   @override
   void onDeviceFound(UwbDevice device) {
     if (parent._disposed) return;
+    parent._knownDevices[device.id] = device;
     parent._deviceFound.add(device);
   }
 
   @override
   void onDeviceLost(String deviceId) {
     if (parent._disposed) return;
+    parent._knownDevices.remove(deviceId);
     parent._deviceLost.add(deviceId);
   }
 
@@ -354,6 +418,15 @@ class _FlutterApiHandler extends UwbFlutterApi {
   void onIncomingRequest(UwbDevice device, TokenPayload peerToken) {
     if (parent._disposed) return;
     parent._incomingRequests.add(IncomingRequest(device, peerToken.bytes));
+  }
+
+  @override
+  void onAccessoryHandshakeEvent(
+    String deviceId,
+    AccessoryHandshakeEvent event,
+  ) {
+    if (parent._disposed) return;
+    parent._adapterRunner.onEvent(deviceId, event);
   }
 }
 
@@ -407,3 +480,7 @@ Future<DeviceCapabilities> getDeviceCapabilities() =>
     FlutterUwb.instance.getDeviceCapabilities();
 Future<UwbReadiness> checkReadiness() => FlutterUwb.instance.checkReadiness();
 Future<void> stopRanging() => FlutterUwb.instance.stopRanging();
+Future<void> registerAccessoryAdapter(AccessoryAdapter adapter) =>
+    FlutterUwb.instance.registerAccessoryAdapter(adapter);
+Future<void> unregisterAccessoryAdapter(String vendorTag) =>
+    FlutterUwb.instance.unregisterAccessoryAdapter(vendorTag);

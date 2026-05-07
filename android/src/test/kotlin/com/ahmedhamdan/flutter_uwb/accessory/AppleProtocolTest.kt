@@ -241,6 +241,41 @@ class AppleProtocolTest {
     }
 
     @Test
+    fun parseAppleUWBConfigDataExtractsSlotDurationFromLiveCapture() {
+        // 30-byte ConfigureAndStart payload captured from iPhone
+        // 26.4.1 ↔ Galaxy S22 Ultra Android 16 in
+        // docs/agents/research/captures/cross_os_20260506_231622/.
+        // Bytes 15..16 LE = 0x0E10 = 3600 RSTU = 3 ms (Apple's required
+        // slot duration that motivated the android.ranging migration).
+        val payload = byteArrayOf(
+            0x01, 0x00, 0x01, 0x00, 0x19, 0x45, 0x55, 0x51,
+            0xF4.toByte(), 0x00, 0x00, 0x0B, 0x09, 0x06, 0x00,
+            0x10, 0x0E, 0xB4.toByte(), 0x00, 0x03, 0x71, 0xBB.toByte(),
+            0x76, 0xAA.toByte(), 0x16, 0xF9.toByte(), 0xD5.toByte(),
+            0x9F.toByte(), 0xC8.toByte(), 0x00,
+        )
+        val parsed = AppleProtocol.parseAppleUWBConfigData(payload)
+        assertEquals(3600, parsed.slotDurationRstu)
+        // Sanity-check the rest of the live capture decoded identically
+        // to what the runtime saw and logged.
+        assertEquals(0x0000F451, parsed.sessionId)
+        assertEquals(9, parsed.channel)
+        assertEquals(11, parsed.preambleIndex)
+    }
+
+    @Test
+    fun parseAppleUWBConfigDataReadsSlotDurationLittleEndian() {
+        // Synthetic payload with bytes 15..16 = 0xD0 0x07 (LE u16 = 2000).
+        // Verifies byte order — a big-endian read would yield 0xD007 = 53255.
+        val payload = ByteArray(30).apply {
+            this[15] = 0xD0.toByte()
+            this[16] = 0x07
+        }
+        val parsed = AppleProtocol.parseAppleUWBConfigData(payload)
+        assertEquals(2000, parsed.slotDurationRstu)
+    }
+
+    @Test
     fun accessoryConfigurationDataMatchesAppleSpecWrapper() {
         val sa0 = 0xAB.toByte()
         val sa1 = 0xCD.toByte()

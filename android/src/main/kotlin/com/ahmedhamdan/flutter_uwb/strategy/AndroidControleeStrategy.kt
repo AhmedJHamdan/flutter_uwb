@@ -1,5 +1,6 @@
 package com.ahmedhamdan.flutter_uwb.strategy
 
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.uwb.RangingParameters
 import androidx.core.uwb.RangingResult
@@ -51,7 +52,7 @@ class AndroidControleeStrategy(
     private val uwbManager: UwbManager,
     private val flutterApi: UwbFlutterApi,
     private val rangingScope: CoroutineScope,
-) : RangingStrategy {
+) : AccessoryControleeStrategy {
 
     /**
      * iOS centrals connect using a random resolvable private address
@@ -62,7 +63,7 @@ class AndroidControleeStrategy(
     override var deviceId: String = initialDeviceId
         private set
 
-    fun retarget(newDeviceId: String) {
+    override fun retarget(newDeviceId: String) {
         deviceId = newDeviceId
     }
 
@@ -107,7 +108,7 @@ class AndroidControleeStrategy(
         state = State.Idle
     }
 
-    suspend fun handleAccessoryRequest(bytes: ByteArray) {
+    override suspend fun handleAccessoryRequest(bytes: ByteArray) {
         try {
             handleAccessoryRequestInner(bytes)
         } catch (t: Throwable) {
@@ -125,6 +126,11 @@ class AndroidControleeStrategy(
     private suspend fun handleAccessoryRequestInner(bytes: ByteArray) {
         val id = AppleProtocol.decodeId(bytes)
         val payload = AppleProtocol.decodePayload(bytes)
+        Log.i(
+            tag,
+            "DIAG ble-rx ts=${SystemClock.elapsedRealtimeNanos()} " +
+                "id=$id state=$state len=${payload.size}",
+        )
         Log.i(tag, "handleAccessoryRequest id=$id state=$state payloadLen=${payload.size}")
         when (state to id) {
             State.AwaitingInitialize to AppleProtocol.MessageId.Initialize -> {
@@ -134,6 +140,11 @@ class AndroidControleeStrategy(
             State.AwaitingConfigureAndStart to AppleProtocol.MessageId.ConfigureAndStart -> {
                 Log.i(tag, "iPhone ConfigureAndStart hex=${payload.toHex()}")
                 runControleeSession(payload)
+                Log.i(
+                    tag,
+                    "DIAG ble-tx ts=${SystemClock.elapsedRealtimeNanos()} " +
+                        "id=AccessoryUwbDidStart",
+                )
                 ble.accessoryNotify(
                     deviceId = deviceId,
                     bytes = AppleProtocol.encodeIdOnly(
@@ -144,6 +155,11 @@ class AndroidControleeStrategy(
             }
             State.Ranging to AppleProtocol.MessageId.Stop -> {
                 stop()
+                Log.i(
+                    tag,
+                    "DIAG ble-tx ts=${SystemClock.elapsedRealtimeNanos()} " +
+                        "id=AccessoryUwbDidStop",
+                )
                 ble.accessoryNotify(
                     deviceId = deviceId,
                     bytes = AppleProtocol.encodeIdOnly(
@@ -258,6 +274,18 @@ class AndroidControleeStrategy(
             // FiraOpenSessionParams API which exposes arbitrary slot
             // durations in RSTU.
         )
+        Log.i(
+            tag,
+            "DIAG session-start ts=${SystemClock.elapsedRealtimeNanos()} " +
+                "sessionId=${parsed.sessionId} ch=${parsed.channel} " +
+                "preamble=${parsed.preambleIndex} " +
+                "peerShort=${parsed.peerShortAddress.toHex()} " +
+                "stsIv=${parsed.stsIv.toHex()} " +
+                "sessionKeyInfo(8B)=${sessionKeyInfo.toHex()} " +
+                "slotDurationMillis=2 (jetpack-default) " +
+                "config=CONFIG_UNICAST_DS_TWR " +
+                "updateRate=AUTOMATIC",
+        )
         rangingJob?.cancel()
         rangingJob = rangingScope.launch {
             scope.prepareSession(params)
@@ -277,27 +305,43 @@ class AndroidControleeStrategy(
     }
 
     private fun emitRangingResult(result: RangingResult) {
+        val nowTs = SystemClock.elapsedRealtimeNanos()
         when (result) {
             is RangingResult.RangingResultPosition -> {
                 val pos = result.position
-                val distance = pos.distance?.value?.toDouble() ?: return
+                val dist = pos.distance?.value
+                val az = pos.azimuth?.value
+                val el = pos.elevation?.value
+                Log.i(
+                    tag,
+                    "DIAG cb-pos ts=$nowTs " +
+                        "dist=${dist ?: "null"} " +
+                        "az=${az ?: "null"} " +
+                        "el=${el ?: "null"} " +
+                        "rt=${pos.elapsedRealtimeNanos}",
+                )
+                if (dist == null) return
                 val sample = RangingSample(
                     deviceId = deviceId,
-                    distanceMeters = distance,
-                    azimuthDegrees = pos.azimuth?.value?.toDouble(),
-                    elevationDegrees = pos.elevation?.value?.toDouble(),
+                    distanceMeters = dist.toDouble(),
+                    azimuthDegrees = az?.toDouble(),
+                    elevationDegrees = el?.toDouble(),
                     elapsedRealtimeNanos = pos.elapsedRealtimeNanos,
                 )
                 flutterApi.onRangingSample(sample) {}
             }
             is RangingResult.RangingResultPeerDisconnected -> {
+                Log.w(tag, "DIAG cb-peer-disc ts=$nowTs for $deviceId")
                 flutterApi.onPeerLost(deviceId) {}
             }
             is RangingResult.RangingResultInitialized -> {
-                Log.d(tag, "controlee ranging session initialized for $deviceId")
+                Log.i(tag, "DIAG cb-init ts=$nowTs for $deviceId")
             }
             is RangingResult.RangingResultFailure -> {
-                Log.w(tag, "controlee ranging failure for $deviceId reason=${result.reason}")
+                Log.w(
+                    tag,
+                    "DIAG cb-failure ts=$nowTs reason=${result.reason} for $deviceId",
+                )
                 flutterApi.onRangingError(
                     deviceId,
                     RangingError(

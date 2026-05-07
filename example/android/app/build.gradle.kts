@@ -7,7 +7,9 @@ plugins {
 
 android {
     namespace = "com.example.flutter_uwb_example"
-    compileSdk = flutter.compileSdkVersion
+    // Override Flutter's default (35) to pick up android.ranging.* symbols
+    // introduced in Android 16. Plugin requires compileSdk = 36.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
