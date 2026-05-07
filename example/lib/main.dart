@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_uwb/flutter_uwb.dart';
 
 import 'brand.dart';
+import 'widgets/custom_adapter_demo.dart';
 import 'widgets/precision_arrow.dart';
 import 'widgets/radar.dart';
 import 'widgets/readout_card.dart';
@@ -57,6 +58,7 @@ class _HomeState extends State<_Home> {
   String? _error;
   bool _cameraAssist = false;
   bool _extendedDistance = false;
+  bool _demoAdapterEnabled = false;
   DeviceCapabilities? _capabilities;
   final Map<String, UwbDevice> _devicesById = {};
   RangingSample? _lastSample;
@@ -303,6 +305,26 @@ class _HomeState extends State<_Home> {
 
   void _setExtendedDistance(bool value) {
     setState(() => _extendedDistance = value);
+  }
+
+  Future<void> _setDemoAdapterEnabled(bool value) async {
+    if (value) {
+      await _uwb.registerAccessoryAdapter(const DemoTagAdapter());
+      // Surface a synthetic tile so the user can tap to exercise the
+      // adapter framework without real DemoTag hardware.
+      final device = UwbDevice(
+        id: demoTagDeviceId,
+        name: 'DemoTag',
+        platform: 'accessory:$demoTagVendorTag',
+      );
+      if (!_devicesById.containsKey(device.id)) {
+        setState(() => _devicesById[device.id] = device);
+      }
+    } else {
+      await _uwb.unregisterAccessoryAdapter(demoTagVendorTag);
+      setState(() => _devicesById.remove(demoTagDeviceId));
+    }
+    if (mounted) setState(() => _demoAdapterEnabled = value);
   }
 
   String get _distanceText {
@@ -559,6 +581,25 @@ class _HomeState extends State<_Home> {
               _InfoRow(
                 label: _QorvoProfile.vendorTag,
                 value: _QorvoProfile.serviceUuid,
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _SettingsSection(
+            title: 'Custom adapter (sample)',
+            subtitle:
+                'Toggles the DemoTag accessory adapter. Surfaces a synthetic '
+                'tile under Discovered peers to exercise the framework '
+                'round-trip without real hardware. Android only.',
+            children: [
+              _ToggleRow(
+                label: 'DemoTag adapter',
+                value: _demoAdapterEnabled,
+                enabled: _activeRangingId == null,
+                onChanged: (v) => _setDemoAdapterEnabled(v),
+                hint: _demoAdapterEnabled
+                    ? 'Registered. Tap the DemoTag tile to start the demo handshake.'
+                    : 'Off. Flip on to register the demo adapter.',
               ),
             ],
           ),

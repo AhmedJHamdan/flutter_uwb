@@ -214,6 +214,49 @@ void main() {
 Native logs: `adb logcat | grep flutter_uwb` on Android, Xcode console filtered by subsystem `flutter_uwb` on iOS.
 </details>
 
+## Accessory adapters (Android only)
+
+The plugin's main story is phone-to-phone ranging plus iOS Nearby Interaction accessory mode. For developers building their own Android UWB hardware (custom firmware running on a DWM3001CDK, an SR250-based tag, etc.) the plugin ships a Dart-driven adapter framework that lets you bring your own BLE-OOB protocol while keeping the BLE transport and FiRa session lifecycle inside the plugin.
+
+```dart
+class MyTagAdapter implements AccessoryAdapter {
+  @override
+  String get vendorTag => 'mytag';
+
+  @override
+  Future<FiraSessionParams> handshake(AccessoryConnection conn) async {
+    // Your accessory's wire protocol — totally up to you.
+    await conn.write(Uint8List.fromList([0x01, 0x42]));
+    final reply = await conn.notifyStream.first;
+    return FiraSessionParams(
+      sessionId: 0xCAFE,
+      channel: 9,
+      preambleIndex: 11,
+      slotDurationMs: 2,
+      slotsPerRangingRound: 6,
+      rangingIntervalMs: 240,
+      sessionKeyInfo: vendorIdAndStsIv,
+      peerShortAddress: reply.sublist(2, 4),
+      roleIsController: true,
+    );
+  }
+}
+
+await uwb.registerAccessoryProfile(
+  serviceUuid: '...',
+  rxUuid: '...',
+  txUuid: '...',
+  vendorTag: 'mytag',
+);
+await uwb.registerAccessoryAdapter(MyTagAdapter()); // NEW
+// Existing flow unchanged — tap the discovered tile.
+await uwb.startRanging(deviceId);
+```
+
+The [`AccessoryConnection`](lib/src/accessory/accessory_adapter.dart) stays open for the entire ranging session, so adapter code can implement application-level keep-alive or mid-session reconfig without a separate API.
+
+iOS accessory mode is unchanged in this release — adapters are recorded but the iOS dispatcher continues to use the hard-coded `IosAccessoryStrategy`. The framework is Android-only in v1.
+
 ## Architecture
 
 For protocol details, token format, BLE/UWB topology, the ECDH-keyed Provisioned STS handshake, and the cross-OS capability-flag routing matrix, see [`doc/architecture.md`](doc/architecture.md).

@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+### Added
+
+- **Accessory adapter framework on Android.** Implement
+  `AccessoryAdapter.handshake(AccessoryConnection)` to ship your own
+  BLE-OOB protocol against custom UWB hardware. The plugin keeps
+  owning BLE transport and the FiRa session lifecycle; your adapter
+  drives the byte-level exchange and returns a `FiraSessionParams`
+  the plugin uses to open `controllerSessionScope`. The connection
+  stays alive across the entire ranging session so adapters can
+  schedule keep-alive writes or read state mid-session at the
+  application level.
+- `FlutterUwb.registerAccessoryAdapter` / `unregisterAccessoryAdapter`
+  Dart API plus `AccessoryAdapter`, `AccessoryConnection`, and
+  `FiraSessionParams` types in the public surface.
+- `StaticPairAccessoryAdapter` (built-in, `vendorTag = 'qorvo-static'`)
+  for developer-bench validation against a Qorvo DWM3001CDK running
+  CLI firmware. Surfaces a synthetic "Qorvo (static demo)" tile when
+  the host registers a Qorvo accessory profile so the framework
+  round-trip is exercisable without rewriting an existing app.
+- `tools/qorvo/` checked-in helper scripts (`qorvo_send.py`,
+  `qorvo_cli.py`, `auto_sync.py`) for driving a Qorvo CLI from a
+  Mac during the static-pair demo.
+
+### Changed
+
+- The existing Apple-NI accessory mode on Android is repackaged as
+  the built-in `AppleNiAccessoryAdapter`. **No code changes
+  required** for apps that today register an `AccessoryProfile`
+  without an accompanying adapter — the framework falls back to the
+  built-in for unregistered tags and the discovered
+  `accessory:<vendor>` device routes through it transparently.
+- iOS accessory mode is unchanged; the framework is Android-only in
+  v1. iOS Pigeon stubs throw `unsupported` if a developer mistakenly
+  calls a framework method on iOS.
+
+### Notes
+
+- Slot duration via Jetpack `androidx.core.uwb` stays gated to {1, 2}
+  ms. Adapters that need the Apple-NI 3 ms slot duration get a clear
+  "unsupported on this Android version" error from
+  `completeAccessoryHandshake`; an `android.ranging.*` fallback is a
+  follow-up.
+
 ## 0.4.1
 
 - Shrink the brand shields-style badge SVG to 137×20 (was 220×32) so
