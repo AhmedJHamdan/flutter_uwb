@@ -7,13 +7,16 @@ works under the hood.
 
 ## Peer matrix
 
-| Peer A | Peer B | Routing | Status |
-|--------|--------|---------|--------|
-| iPhone | iPhone | peer mode (`NINearbyPeerConfiguration` over MPC) | ✅ shipped |
-| Android | Android | peer mode (`UwbControllerSessionScope` over BLE OOB + ECDH-keyed Provisioned STS, 0.4.0+) | ✅ shipped |
-| iPhone | Android | accessory mode (Apple FiRa over the symmetric BLE service) — auto-routed via the `OobCapability` flag, no `registerAccessoryProfile` boilerplate | 🚧 experimental in 0.4.0; the BLE handshake completes and an Android UWB session reaches `ACTIVE`, but `androidx.core.uwb` rejects the slot duration Apple selects, so stable samples are not yet delivered |
-| iPhone | Apple-spec accessory | accessory mode (Apple FiRa over BLE) | ✅ code-complete (real FiRa accessory required) |
-| Android | Apple-spec accessory | accessory mode (Android-as-host) | ✅ code-complete (same hardware gating) |
+| Peer A | Peer B | Routing |
+|--------|--------|---------|
+| iPhone | iPhone | peer mode (`NINearbyPeerConfiguration` over MultipeerConnectivity) |
+| Android | Android | peer mode (`UwbControllerSessionScope` over BLE OOB + ECDH-keyed Provisioned STS) |
+| iPhone | Apple FiRa accessory (Qorvo / NXP / MFi tag) | accessory mode (Apple NI Accessory Protocol over BLE) |
+
+Cross-OS (iPhone ↔ Android) is not supported in 1.0.0. Both attempted
+paths — `androidx.core.uwb` driving an Apple-FiRa controlee on Android,
+and the Galaxy ↔ Qorvo CLI fallback — hit chip / firmware-level walls
+that aren't fixable from the plugin layer.
 
 ---
 
@@ -36,53 +39,41 @@ interpret them on the wire across platforms.
 are symmetric so the role byte has no effect on iOS.
 
 Accessory mode does not use `getLocalToken` / `exchangeTokens`. The
-multi-message Apple FiRa protocol is driven internally by the plugin.
+multi-message Apple NI Accessory Protocol is driven internally by the
+plugin.
 
 ---
 
-## BLE OOB transport
+## BLE OOB transport (Android↔Android)
 
-Both platforms run a symmetric GATT setup using the same UUIDs:
+Two Android peers run a symmetric GATT setup using these UUIDs:
 
 | UUID | Role |
 |------|------|
-| `4F1A9A1C-08D8-4B2E-BC6B-6B1D9F8D7B21` | Custom flutter_uwb service |
+| `4F1A9A1C-08D8-4B2E-BC6B-6B1D9F8D7B21` | flutter_uwb peer service |
 | `B2D2A7F9-8C2A-4D7E-A89D-1D3A4E5F6A70` | Write characteristic (peer sends its token here) |
 | `C9A0A82B-0C5A-4B8E-9E2E-5DBE2D08F7C3` | Notify characteristic (reply token arrives here) |
 
-Each device advertises the service UUID and scans for it simultaneously.
-Whichever side calls `pairWith` / `exchangeTokens` first becomes the GATT
-client; the other side is the GATT server. After the one-shot token swap
-both sides call `startRanging` and the BLE link is dropped.
-
-iOS publishes the same service via `CBPeripheralManager` so the
-service is discoverable from Android centrals. iOS BLE advertisements
-cannot carry service-data (Apple strips it), so an Android scan that
-matches the symmetric UUID with no service-data is treated as an iOS
-peer by convention — Android always emits `[0x02]`.
-
-When the symmetric service hosts a cross-OS pair, the GATT server
-sniffs the first byte written to `CHAR_WRITE`: `0x0A`/`0x0B`/`0x0C`
-flips the central into Apple-FiRa accessory mode and routes inbound
-bytes to the `AndroidControleeStrategy`; `0x01`/`0x02` keeps it on the
-ECDH peer-handshake path. Replies go back through `CHAR_NOTIFY` either
-way.
+Each device advertises the service UUID and scans for it
+simultaneously. Whichever side calls `pairWith` / `exchangeTokens`
+first becomes the GATT client; the other side is the GATT server.
+After the one-shot token swap both sides call `startRanging` and the
+BLE link is dropped.
 
 Device identifiers are platform-local UUIDs:
-- Central side: `CBPeripheral.identifier.uuidString` (iOS) / BLE MAC address (Android).
-- Peripheral side: `CBCentral.identifier.uuidString` (iOS) / BLE MAC address (Android).
+- Central side: BLE MAC address (Android `BluetoothDevice.address`).
+- Peripheral side: BLE MAC address.
 
-**Foreground-only.** iOS BLE peripheral mode does not include the service
+**Foreground-only.** BLE peripheral mode does not include the service
 UUID in the main advertising packet while backgrounded.
 
 ---
 
-## Apple FiRa accessory protocol
+## Apple FiRa accessory protocol (iOS-only)
 
-The accessory-mode byte protocol is documented in
-`lib/src/accessory/apple_protocol.dart` and in Apple's WWDC 2022 sample
-*"Implementing Spatial Interactions with Third-Party Accessories Using the
-U1 Chip"*.
+The accessory-mode byte protocol is Apple's NI Accessory Protocol,
+documented in Apple's WWDC 2022 sample *"Implementing Spatial
+Interactions with Third-Party Accessories Using the U1 Chip"*.
 
 Message IDs:
 
@@ -96,50 +87,22 @@ Message IDs:
 | `0x0C` | iPhone → accessory | empty (stop session) |
 
 Vendor-specific service / characteristic UUIDs are registered via
-`registerAccessoryProfile`. The protocol byte format is fixed; only the
-BLE UUIDs are vendor-chosen.
+`registerAccessoryProfile`. The protocol byte format is fixed; only
+the BLE UUIDs are vendor-chosen.
 
----
-
-## OobCapability flag (cross-OS routing)
-
-Every flutter_uwb peer advertises a 1-byte capability flag in its OOB
-channel. Both natives parse it on discovery and pin
-`UwbDevice.platform` accordingly so the strategy dispatcher routes the
-session without guessing.
-
-| Wire byte | Meaning             | Carrier on Android (BLE service-data of `4F1A9A1C-…`) | Carrier on iOS (`MCNearbyServiceAdvertiser.discoveryInfo`) |
-|-----------|---------------------|--------------------------------------------------------|------------------------------------------------------------|
-| `0x01`    | iOS peer            | (not advertised by Android)                            | `{"caps": "0x01"}`                                         |
-| `0x02`    | Android peer        | `[0x02]`                                               | (not advertised by iOS)                                    |
-| `0x03`    | Accessory host (reserved) | —                                                | —                                                          |
-| missing   | back-compat default | treated as `0x01` on Android scans of the symmetric service (iOS BLE strips service-data, so absence implies an iOS peer) | treated as `0x01` on iOS MPC parses |
-
-Routing matrix — what `UwbDevice.platform` becomes on each side after
-parsing the remote flag:
-
-| Local stack | Remote flag | `UwbDevice.platform` | Strategy                  |
-|-------------|-------------|----------------------|---------------------------|
-| Android     | `0x02`      | `android`            | `AndroidPeerStrategy`     |
-| Android     | `0x01`      | `accessory:ios`      | `AndroidControleeStrategy`|
-| iOS         | `0x01`      | `ios`                | `IosPeerStrategy`         |
-| iOS         | `0x02`      | `accessory:android`  | `IosAccessoryStrategy`    |
-
-The Dart constant set is in `lib/src/oob_capability.dart`; the native
-mirrors are `OobCapability.kt` and `OobCapability.swift`. Reserved
-values `0x03`–`0xFF` map to the back-compat default until a future
-release claims them.
+Driven by `IosAccessoryStrategy` on iOS. `registerAccessoryProfile`
+returns an error on Android in 1.0.0 — Android-as-accessory never
+delivered samples and was dropped.
 
 ---
 
 ## Provisioned STS (Android↔Android)
 
-0.4.0 wraps the BLE OOB token swap in an ECDH-keyed envelope so the
-UWB radio session that follows is encrypted under a key both peers
-agree on out-of-band, instead of running with `sessionKeyInfo = null`
-like 0.3.x did.
+The BLE OOB token swap is wrapped in an ECDH-keyed envelope so the UWB
+radio session that follows is encrypted under a key both peers agree
+on out-of-band.
 
-Layered handshake on top of the existing GATT service:
+Layered handshake on top of the GATT service above:
 
 ```
 Client (initiator)                              Server (acceptor)
@@ -190,7 +153,7 @@ Implementation files:
 
 | Layer                     | File                                       |
 |---------------------------|--------------------------------------------|
-| ECDH + HKDF + envelope    | `android/.../oob/OobHandshake.kt` (+ `OobHandshake.swift` for future iOS↔Android peer transports) |
+| ECDH + HKDF + envelope    | `android/.../oob/OobHandshake.kt`          |
 | Chunked framing           | `android/.../oob/BleFramer.kt`             |
 | Per-connection state machine | `android/.../oob/BleOob.kt`             |
 | sessionKey storage        | `android/.../oob/TokenStore.kt`            |
@@ -198,15 +161,6 @@ Implementation files:
 
 iOS↔iOS peer pairing keeps MultipeerConnectivity's `.required`
 encryption — no ECDH layer added on top, by design.
-
-iOS↔Android cross-OS pairs route through the Apple FiRa accessory
-protocol, where STS material comes from the iPhone's `NISession` and
-is forwarded into the Android radio via
-`AppleProtocol.parseAppleUWBConfigData`. The 30-byte
-`AppleUWBConfigData` payload's byte layout (session id, channel,
-preamble, 6-byte STS IV, peer short address) is pinned by golden
-fixtures in `android/src/test/resources/apple_protocol/` captured
-from a real iPhone. Cross-OS ranging is experimental in 0.4.0.
 
 ---
 

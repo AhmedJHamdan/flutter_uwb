@@ -12,25 +12,33 @@
 
 ## <img src="assets/brand/flutter_uwb_pulse.svg" width="20" align="left"/> Features
 
-- **Distance + direction** — sub-10 cm distance and azimuth/elevation when the hardware supports it.
-- **No signalling server** — peers find each other over BLE; the plugin handles the UWB token exchange.
-- **One API, two platforms** — same Dart surface for Android (`androidx.core.uwb`) and iOS (`NearbyInteraction`).
-- **Apple FiRa accessories** — talk to Qorvo, NXP and other certified tags out of the box.
-- **End-to-end encrypted** — Android↔Android sessions are keyed by an X25519 ECDH handshake over BLE OOB.
+- **Distance + direction** — centimeter-level distance and azimuth/elevation when the hardware supports it.
+- **Discovery + pairing built in** — peers find each other over BLE / MultipeerConnectivity, and the plugin runs the UWB token exchange end-to-end. No QR codes, no hand-rolled signalling.
+- **One Dart API, two platforms** — same surface for Android (`androidx.core.uwb`) and iOS (`NearbyInteraction`).
+- **Apple FiRa accessories** — talk to Qorvo, NXP, and other certified UWB tags from iOS out of the box.
+- **End-to-end encrypted** — every Android↔Android session uses a fresh per-pair key; iOS rides Apple's protected discovery channels.
+- **Production-ready** — readiness checks tell you what's supported and which permissions to ask for; typed error codes tell you exactly why something failed, so apps can recover gracefully instead of showing platform stack traces.
 - **Streams everywhere** — discovery, ranging samples, errors, and lifecycle events as `Stream`s you can plug into any state-management solution.
+
+## What ranges against what
+
+| Pair                                       | Status |
+| ------------------------------------------ | ------ |
+| **iPhone ↔ iPhone**                        | ✅ Stable |
+| **Android ↔ Android**                      | ✅ Stable |
+| **iPhone ↔ Apple-FiRa accessory** (Qorvo, NXP, MFi tag) | ✅ Stable |
+| iPhone ↔ Android (cross-OS)                | ❌ Not supported (see [Architecture](#architecture)) |
 
 ## Platform support
 
 | Platform    | Minimum hardware                                                            | Notes                                                                                       |
 | ----------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **Android** | Pixel 6 Pro+, Galaxy S21 Ultra+, or any device exposing `FEATURE_UWB`        | Accessory/controlee mode requires Pixel 7 Pro+ on Android 14+.                              |
+| **Android** | Pixel 6 Pro+, Galaxy S21 Ultra+, or any device exposing `FEATURE_UWB`        | Android 14+ recommended for stable `UwbAvailabilityCallback` behavior.                      |
 | **iOS**     | iPhone with U1/U2 chip (iPhone 11+, excluding SE 2/3) on iOS 16+             | Camera assist & extended distance gated by `RangingOptions`. iOS 14/15 hosts must pin to 0.3.1. |
 
 `isUwbAvailable()` returns `false` on emulators, the iOS simulator, and devices without a UWB chip — always check it before calling discovery.
 
 > **iOS 26 / U2 chip caveat.** Apple disabled `supportsDirectionMeasurement` for the U2 chip on iOS 26, so iPhone 15 Pro / Pro Max and the iPhone 16 series report `null` for `azimuthDegrees` and `elevationDegrees`. Distance is unaffected.
-
-> **Cross-OS (iPhone ↔ Android) is experimental in 0.4.0.** BLE handshake and Android UWB session activation complete, but `androidx.core.uwb` rejects the slot duration Apple selects, so stable distance samples are not yet delivered. Same-OS pairs (iOS↔iOS, Android↔Android) are stable. iPhones are auto-discovered on Android and vice-versa — no `registerAccessoryProfile` boilerplate is needed for cross-OS.
 
 ## Installation
 
@@ -51,17 +59,28 @@ final uwb = FlutterUwb.instance;
 
 if (!await uwb.isUwbAvailable()) return;
 
-await uwb.startDiscovery('phone-A');
-
-uwb.deviceFound.listen((device) async {
-  await uwb.pairWith(device.id);     // exchanges UWB tokens
-  await uwb.startRanging(device.id); // begin streaming samples
+// Acceptor side — auto-respond when a peer initiates pairing.
+uwb.incomingRequests.listen((req) async {
+  final myToken = await uwb.getLocalToken(UwbRole.controlee);
+  await uwb.acceptRequest(req.device.id, myToken);
+  await uwb.startRanging(req.device.id);
 });
 
 uwb.rangingSamples.listen((s) {
   print('${s.distanceMeters.toStringAsFixed(2)} m  '
         '${s.azimuthDegrees?.toStringAsFixed(1)}°');
 });
+
+await uwb.startDiscovery('phone-A');
+
+// Initiator side — call from your UI when the user picks a peer.
+Future<void> pairAndRange(UwbDevice device) async {
+  // Accessories handshake via the Apple NI Accessory Protocol — skip pairWith.
+  if (!device.platform.startsWith('accessory')) {
+    await uwb.pairWith(device.id);
+  }
+  await uwb.startRanging(device.id);
+}
 ```
 
 When you're done:
@@ -71,26 +90,43 @@ await uwb.stopRanging();
 await uwb.stopDiscovery();
 ```
 
-> **Both** peers must call `pairWith` before either calls `startRanging`. Trigger this from your own UI (a button, a QR scan, a server event — whatever fits).
+> Pairing is asymmetric: one side calls `pairWith` (the initiator); the other side's `incomingRequests` stream fires and that side calls `acceptRequest`. Both sides then call `startRanging`. Trigger the initiator from your own UI — a button, a QR scan, a server event, whatever fits.
+
+### Apple-FiRa accessories (iOS only)
+
+To range against a Qorvo, NXP, or third-party Apple-FiRa tag, register the vendor's BLE service triplet before `startDiscovery`:
+
+```dart
+await uwb.registerAccessoryProfile(
+  serviceUuid: '<accessory service UUID>',
+  rxUuid:      '<accessory rx UUID>',
+  txUuid:      '<accessory tx UUID>',
+  vendorTag:   'my-tag', // optional — surfaces as `accessory:my-tag`
+);
+```
+
+The accessory shows up in `deviceFound` with `device.platform == 'accessory:my-tag'`. The Quick Start's `pairAndRange` already handles it — the platform check skips `pairWith` and lets `startRanging` drive Apple's NI Accessory Protocol. Calling `registerAccessoryProfile` on Android throws `UwbException` (iOS-only in 1.0.0).
+
+See [`example/lib/main.dart`](example/lib/main.dart) for a working Qorvo DWM3001CDK profile.
 
 A complete runnable demo lives in [`example/`](example/).
 
 ## API
 
-| Stream            | Fires when                                                |
-| ----------------- | --------------------------------------------------------- |
-| `deviceFound`     | A new peer is discovered via BLE                          |
-| `deviceLost`      | A previously-discovered peer disappears                   |
-| `rangingSamples`  | A new `RangingSample` arrives from the active session     |
-| `peerLost`        | The ranging peer disconnects mid-session                  |
-| `rangingErrors`   | A platform error occurs inside the active session         |
-| `sessionState`    | Aggregate `idle → discovering → pairing → ranging` view   |
+| Stream             | Fires when                                                |
+| ------------------ | --------------------------------------------------------- |
+| `deviceFound`      | A new peer is discovered via BLE / MPC                    |
+| `deviceLost`       | A previously-discovered peer disappears                   |
+| `incomingRequests` | A peer sends us their UWB token; reply with `acceptRequest` or `declineRequest` |
+| `rangingSamples`   | A new `RangingSample` arrives from the active session     |
+| `peerLost`         | The ranging peer disconnects mid-session                  |
+| `rangingErrors`    | A platform error occurs inside the active session         |
 
 `RangingSample` exposes `distanceMeters`, `azimuthDegrees`, `elevationDegrees`, `elapsedRealtimeNanos` and the originating `deviceId`. All mutating methods throw `UwbException` on failure.
 
 `startRanging` accepts an optional `RangingOptions(cameraAssist, extendedDistance)` for iOS opt-ins. Use `getDeviceCapabilities()` to gate the toggles in your UI.
 
-For accessory mode (Qorvo, NXP, third-party FiRa tags), use `registerAccessoryProfile(serviceUuid, rxUuid, txUuid, vendorTag)`. iPhones running `flutter_uwb` are auto-discovered on Android without this step.
+`checkReadiness()` returns a snapshot of the UWB radio, Bluetooth, and runtime-permission state — use it before `startDiscovery` / `startRanging` to drive an onboarding flow without trying to range first and catching the failure.
 
 Full API docs: <https://pub.dev/documentation/flutter_uwb/latest/>
 
@@ -151,12 +187,12 @@ Add to `ios/Runner/Info.plist`:
 </array>
 ```
 
-The Bonjour service names must match exactly. If you only target Android peers or FiRa accessories, the local-network keys are optional but harmless.
+The Bonjour service names must match exactly. If you only target FiRa accessories, the local-network keys are optional but harmless.
 </details>
 
 ## Example app
 
-A runnable cross-platform demo lives in [`example/`](example/). It wires up discovery, pairing, and a live distance/azimuth readout for both same-OS and cross-OS pairs.
+A runnable demo lives in [`example/`](example/). It wires up discovery, pairing, and a live distance/azimuth readout for same-OS pairs and (on iOS) Apple-FiRa accessories.
 
 <p align="center">
   <img src="assets/brand/flutter_uwb_screenshot.png" alt="flutter_uwb example app" width="320"/>
@@ -169,19 +205,13 @@ A runnable cross-platform demo lives in [`example/`](example/). It wires up disc
 
 Almost always missing runtime permissions. Android 12+ requires the user to grant `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE` and `UWB_RANGING` at runtime — declaring them in the manifest is not enough. Use [`uwb.checkReadiness()`](#api) and request anything in `missingPermissions` (typically with [`permission_handler`](https://pub.dev/packages/permission_handler)) before calling `startDiscovery`.
 
-If permissions are granted and you still see nothing, check that Bluetooth is actually powered on (`r.bluetoothEnabled`) and that the peer is also running 0.4.x — 0.4.x peers cannot pair with 0.3.x peers (see [`MIGRATION.md`](MIGRATION.md)).
+If permissions are granted and you still see nothing, check that Bluetooth is actually powered on (`r.bluetoothEnabled`) and that the peer is also running 1.0.x — wire-format compatibility with 0.3.x peers ended in 0.4.0.
 </details>
 
 <details>
 <summary><b><code>UwbErrorCode.regionalRestriction</code> on first ranging call</b></summary>
 
-UWB is disabled by the OS in a small number of jurisdictions (Russia, Indonesia, parts of South America). The hardware is present but the radio is locked. There's no programmatic recovery — surface a region-restriction notice to the user.
-</details>
-
-<details>
-<summary><b><code>isUwbAvailable()</code> returns <code>false</code> on a Pixel 6/7/8</b></summary>
-
-If the device has a UWB radio and isn't region-restricted, the most common cause is a stale `UwbManager` state after the screen-lock cycle. Toggle airplane mode once and retry. If it still returns false, confirm the build is on Android 14+ — older Android versions report UWB inconsistently.
+UWB is regulated and the OS disables ranging in some jurisdictions even on hardware that ships with the radio. There's no programmatic recovery — surface a region-restriction notice to the user.
 </details>
 
 <details>
@@ -190,12 +220,6 @@ If the device has a UWB radio and isn't region-restricted, the most common cause
 If the host app backgrounds during a session, the plugin tears down the active `NISession` and fires `onPeerLost` so the app can react (the alternative is undefined behaviour from `NISession` + `ARSession` left running across suspension). The host app should re-call `startRanging` on foreground if it wants ranging back.
 
 If you see this without backgrounding, the most likely cause is camera-assist on a session whose `ARSession` hasn't received its first frame yet — that surfaces as `NIErrorCodeInvalidARConfiguration` (-5883). Disable `cameraAssist` in `RangingOptions` and retry.
-</details>
-
-<details>
-<summary><b>Cross-OS (iPhone ↔ Android) pairs but never produces samples</b></summary>
-
-Known limitation in 0.4.x. BLE discovery, the Apple-FiRa accessory handshake, and Android UWB session activation all complete, but `androidx.core.uwb` rejects the slot duration Apple selects so distance samples are not delivered. Same-OS pairs are unaffected. Tracked for v0.5.0.
 </details>
 
 <details>
@@ -216,7 +240,7 @@ Native logs: `adb logcat | grep flutter_uwb` on Android, Xcode console filtered 
 
 ## Architecture
 
-For protocol details, token format, BLE/UWB topology, the ECDH-keyed Provisioned STS handshake, and the cross-OS capability-flag routing matrix, see [`doc/architecture.md`](doc/architecture.md).
+For protocol details, token format, BLE/UWB topology, and the ECDH-keyed Provisioned STS handshake on Android, see [`doc/architecture.md`](doc/architecture.md).
 
 ## License
 

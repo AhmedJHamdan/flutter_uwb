@@ -5,10 +5,10 @@ import NearbyInteraction
 
 /// iOS↔accessory ranging via Apple's FiRa accessory BLE protocol.
 ///
-/// The protocol is documented in `lib/src/accessory/apple_protocol.dart` and
-/// Apple's WWDC 2022 *"Implementing Spatial Interactions with Third-Party
-/// Accessories Using the U1 Chip"*. This class drives the handshake on the
-/// iPhone (controller) side.
+/// The protocol is documented in `doc/architecture.md` and Apple's
+/// WWDC 2022 *"Implementing Spatial Interactions with Third-Party
+/// Accessories Using the U1 Chip"*. This class drives the handshake
+/// on the iPhone (controller) side.
 ///
 /// ## Pairing flow
 ///
@@ -242,7 +242,7 @@ final class IosAccessoryStrategy: NSObject, RangingStrategy, NISessionDelegate,
   }
 }
 
-/// Mirror of `AppleAccessoryMessageId` in `apple_protocol.dart`.
+/// Apple NI Accessory Protocol message IDs.
 enum AccessoryMessageId: UInt8 {
   case accessoryConfigurationData = 0x01
   case accessoryUwbDidStart = 0x02

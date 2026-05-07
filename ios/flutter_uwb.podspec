@@ -4,13 +4,15 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'flutter_uwb'
-  s.version          = '0.4.1'
-  s.summary          = 'Cross-OS BLE OOB + UWB ranging (Android Jetpack UWB, iOS Nearby Interaction).'
+  s.version          = '1.0.0'
+  s.summary          = 'BLE OOB + UWB ranging for Flutter (Android Jetpack UWB, iOS Nearby Interaction).'
   s.description      = <<-DESC
-A Flutter plugin for Ultra-Wideband (UWB) precise ranging. Both platforms use
-a BLE GATT custom service for out-of-band discovery and token exchange. UWB
-ranging itself runs on Jetpack UWB on Android and NearbyInteraction
-(NISession) on iOS.
+A Flutter plugin for Ultra-Wideband (UWB) precise ranging. Same-OS pairs
+(iPhone↔iPhone, Android↔Android) use a BLE GATT (Android) or
+MultipeerConnectivity (iOS) sidechannel for out-of-band discovery and
+token exchange. UWB ranging itself runs on Jetpack UWB on Android and
+NearbyInteraction (NISession) on iOS. iOS additionally supports the
+Apple NI Accessory Protocol for Qorvo / NXP / MFi UWB tags.
                        DESC
   s.homepage         = 'https://github.com/AhmedJHamdan/flutter_uwb'
   s.license          = { :file => '../LICENSE' }

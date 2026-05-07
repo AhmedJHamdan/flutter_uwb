@@ -16,7 +16,7 @@ body:
     id: plugin-version
     attributes:
       label: flutter_uwb version
-      placeholder: "0.4.1"
+      placeholder: "1.0.0"
     validations:
       required: true
 

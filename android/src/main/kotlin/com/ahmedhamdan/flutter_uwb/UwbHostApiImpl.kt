@@ -14,13 +14,11 @@ import java.util.concurrent.Executors
 import com.ahmedhamdan.flutter_uwb.oob.BleOob
 import com.ahmedhamdan.flutter_uwb.oob.OobCapability
 import com.ahmedhamdan.flutter_uwb.oob.TokenStore
-import com.ahmedhamdan.flutter_uwb.strategy.AndroidControleeStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidPeerStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.RangingStrategy
 import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.UUID
 import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,11 +38,11 @@ import kotlinx.coroutines.plus
  *   [5..8] sessionId (u32, controller only)
  *
  * Ranging is dispatched by `UwbDevice.platform`:
- * - "android" / "ios"      -> [AndroidPeerStrategy] (peer mode)
- * - "accessory"            -> [AndroidControleeStrategy] (Apple-protocol
- *                            controlee role; Android-as-accessory)
- * - "accessory:<vendor>"   -> currently routes to AndroidControleeStrategy.
- *                            Custom vendor adapter pluging is a follow-up.
+ * - "android"  -> [AndroidPeerStrategy] (peer mode against another
+ *                 Android phone running flutter_uwb)
+ *
+ * Accessory mode (`registerAccessoryProfile`) is iOS-only — Android
+ * returns an error if the host app calls it on this platform.
  */
 class UwbHostApiImpl(
     private val appContext: Context,
@@ -59,7 +57,6 @@ class UwbHostApiImpl(
     private val discovered = LinkedHashMap<String, UwbDevice>()
 
     private var uwbManager: UwbManager? = null
-    // not used by strategies
     private var controllerScope: UwbControllerSessionScope? = null
     private var controleeScope: UwbControleeSessionScope? = null
     private var localSessionId: Int = 0
@@ -83,6 +80,11 @@ class UwbHostApiImpl(
     init {
         ble.setCallback(object : BleOob.Callback {
             override fun onDeviceFound(id: String, name: String, capability: Byte) {
+                // Only surface Android peers — flutter_uwb 1.0.0 does not
+                // range cross-OS, so iOS peers spotted on the symmetric
+                // service are dropped at the discovery layer rather than
+                // shown as "discoverable" only to fail at startRanging.
+                if (capability == OobCapability.IOS_PEER) return
                 val isNew = !discovered.containsKey(id)
                 val platform = OobCapability.toAndroidPlatform(capability)
                 val device = UwbDevice(id = id, name = name, platform = platform)
@@ -109,53 +111,11 @@ class UwbHostApiImpl(
             override fun onError(msg: String) {
                 Log.e(tag, "BLE error: $msg")
             }
-            override fun onAccessoryRequest(
-                id: String,
-                name: String,
-                serviceUuid: UUID,
-                bytes: ByteArray,
-            ) {
-                // Surface the iPhone-host as a discovered "accessory:<tag>"
-                // device so the app can call startRanging against it. The
-                // symmetric SVC means a cross-OS iOS peer that scan
-                // already labeled `accessory:ios`; don't downgrade it
-                // here.
-                val existing = discovered[id]
-                val key = serviceUuid.toString().uppercase()
-                val vendorTag = registeredProfiles[key]?.vendorTag
-                val platform = when {
-                    existing?.platform != null
-                        && existing.platform!!.startsWith("accessory") ->
-                        existing.platform
-                    vendorTag != null -> "accessory:$vendorTag"
-                    else -> "accessory"
-                }
-                val isNew = existing == null
-                val device = UwbDevice(id = id, name = name, platform = platform)
-                discovered[id] = device
-                if (isNew) flutterApi.onDeviceFound(device) {}
-
-                // Route the bytes to the active controlee strategy.
-                // iOS uses random resolvable private addresses that may
-                // not match the MAC the user originally tapped, so we
-                // re-target the strategy to whichever central is now
-                // driving the Apple-FiRa exchange.
-                val s = activeStrategy as? AndroidControleeStrategy ?: run {
-                    Log.w(this@UwbHostApiImpl.tag, "onAccessoryRequest: no active controlee strategy for $id")
-                    return
-                }
-                Log.i(this@UwbHostApiImpl.tag, "onAccessoryRequest dispatch from=$id strategyId=${s.deviceId}")
-                if (s.deviceId != id) {
-                    s.retarget(id)
-                }
-                mainScope.launch { s.handleAccessoryRequest(bytes) }
-            }
         })
     }
 
     // ---------------- BLE OOB ----------------
     override fun startDiscovery(localName: String): VoidResult = try {
-        ble.setAccessoryProfiles(bleAccessoryProfiles())
         ble.start(localName)
         VoidResult(ok = true)
     } catch (t: Throwable) {
@@ -192,38 +152,21 @@ class UwbHostApiImpl(
     }
 
     // ---------------- Accessory profile registration ----------------
-    private data class RegisteredProfile(
-        val bleProfile: BleOob.AccessoryProfile,
-        val vendorTag: String?,
-    )
-    private val registeredProfiles = LinkedHashMap<String, RegisteredProfile>()
+    // Apple-FiRa accessory mode is an iOS-only feature in flutter_uwb
+    // 1.0.0. Both register / unregister return a structured error here so
+    // host apps can branch on `Platform.isIOS` cleanly.
 
-    private fun bleAccessoryProfiles(): List<BleOob.AccessoryProfile> =
-        registeredProfiles.values.map { it.bleProfile }
-
-    override fun registerAccessoryProfile(profile: AccessoryProfile): VoidResult {
-        val svc = profile.serviceUuid
-            ?: return VoidResult(ok = false, error = "serviceUuid required")
-        val rx = profile.rxUuid
-            ?: return VoidResult(ok = false, error = "rxUuid required")
-        val tx = profile.txUuid
-            ?: return VoidResult(ok = false, error = "txUuid required")
-        val key = svc.uppercase()
-        val bleProfile = BleOob.AccessoryProfile(
-            serviceUuid = UUID.fromString(svc),
-            rxUuid = UUID.fromString(rx),
-            txUuid = UUID.fromString(tx),
+    override fun registerAccessoryProfile(profile: AccessoryProfile): VoidResult =
+        VoidResult(
+            ok = false,
+            error = "registerAccessoryProfile is iOS-only in flutter_uwb 1.0.0",
         )
-        registeredProfiles[key] = RegisteredProfile(bleProfile, profile.vendorTag)
-        ble.setAccessoryProfiles(bleAccessoryProfiles())
-        return VoidResult(ok = true)
-    }
 
-    override fun unregisterAccessoryProfile(serviceUuid: String): VoidResult {
-        registeredProfiles.remove(serviceUuid.uppercase())
-        ble.setAccessoryProfiles(bleAccessoryProfiles())
-        return VoidResult(ok = true)
-    }
+    override fun unregisterAccessoryProfile(serviceUuid: String): VoidResult =
+        VoidResult(
+            ok = false,
+            error = "unregisterAccessoryProfile is iOS-only in flutter_uwb 1.0.0",
+        )
 
     override fun exchangeTokens(
         deviceId: String,
@@ -407,34 +350,21 @@ class UwbHostApiImpl(
     ): RangingStrategy? {
         val id = device.id ?: return null
         val platform = device.platform ?: "android"
-        return when {
-            platform == "android" || platform == "ios" -> {
-                val token = TokenStore.getPeer(id)
-                if (token == null || token.isEmpty()) {
-                    throw IllegalStateException(
-                        "No peer token for $id. Run exchangeTokens (or acceptRequest) first.",
-                    )
-                }
-                AndroidPeerStrategy(
-                    deviceId = id,
-                    peerTokenBytes = token,
-                    uwbManager = mgr,
-                    flutterApi = flutterApi,
-                    rangingScope = mainScope,
-                    sessionKeyInfo = TokenStore.getSessionKey(id),
-                )
-            }
-            platform == "accessory" || platform.startsWith("accessory:") -> {
-                AndroidControleeStrategy(
-                    initialDeviceId = id,
-                    ble = ble,
-                    uwbManager = mgr,
-                    flutterApi = flutterApi,
-                    rangingScope = mainScope,
-                )
-            }
-            else -> null
+        if (platform != "android") return null
+        val token = TokenStore.getPeer(id)
+        if (token == null || token.isEmpty()) {
+            throw IllegalStateException(
+                "No peer token for $id. Run exchangeTokens (or acceptRequest) first.",
+            )
         }
+        return AndroidPeerStrategy(
+            deviceId = id,
+            peerTokenBytes = token,
+            uwbManager = mgr,
+            flutterApi = flutterApi,
+            rangingScope = mainScope,
+            sessionKeyInfo = TokenStore.getSessionKey(id),
+        )
     }
 
     override fun getDeviceCapabilities(
@@ -569,7 +499,6 @@ class UwbHostApiImpl(
         }
         try { availabilityExecutor.shutdownNow() } catch (_: Throwable) {}
         discovered.clear()
-        registeredProfiles.clear()
         TokenStore.clear()
     }
 

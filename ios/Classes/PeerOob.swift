@@ -27,10 +27,8 @@ import MultipeerConnectivity
 /// reliably while the app is backgrounded.
 final class PeerOob: NSObject {
   protocol Callback: AnyObject {
-    /// - Parameter capability: remote peer's [OobCapability] byte.
-    ///   Defaults to `OobCapability.unknownDefault` when the
-    ///   advertisement omits the discovery-info entry.
-    func onPeerDeviceFound(id: String, name: String, capability: UInt8)
+    /// A nearby iPhone running flutter_uwb has been seen via MPC.
+    func onPeerDeviceFound(id: String, name: String)
     func onPeerDeviceLost(id: String)
     func onIncomingRequest(id: String, name: String, peerToken: Data)
     func onConnected(id: String, name: String)
@@ -83,7 +81,7 @@ final class PeerOob: NSObject {
 
     let advertiser = MCNearbyServiceAdvertiser(
       peer: peerID,
-      discoveryInfo: OobCapability.discoveryInfo(),
+      discoveryInfo: nil,
       serviceType: Self.serviceType
     )
     advertiser.delegate = self
@@ -234,8 +232,7 @@ extension PeerOob: MCNearbyServiceBrowserDelegate {
     let isNew = peers[id] == nil
     peers[id] = peerID
     if isNew {
-      let capability = OobCapability.parseDiscoveryInfo(info)
-      callback?.onPeerDeviceFound(id: id, name: id, capability: capability)
+      callback?.onPeerDeviceFound(id: id, name: id)
     }
   }
 
@@ -266,13 +263,7 @@ extension PeerOob: MCNearbyServiceAdvertiserDelegate {
     let id = peerID.displayName
     if peers[id] == nil {
       peers[id] = peerID
-      // We don't get the inviter's discoveryInfo here; assume same-OS
-      // peer (the only thing MPC can reach).
-      callback?.onPeerDeviceFound(
-        id: id,
-        name: id,
-        capability: OobCapability.iosPeer
-      )
+      callback?.onPeerDeviceFound(id: id, name: id)
     }
     invitationHandler(true, session)
   }

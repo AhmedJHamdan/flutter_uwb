@@ -7,62 +7,26 @@ private func dlog(_ msg: String) {
   os_log("%{public}@", log: bleLog, type: .info, msg)
 }
 
-/// CoreBluetooth-based out-of-band transport.
+/// CoreBluetooth-based out-of-band transport for **iOS-as-host**
+/// driving an Apple-FiRa UWB accessory (Qorvo, NXP, custom MFi tag).
 ///
-/// Two roles are driven from the same instance:
-///
-/// 1. **Symmetric peer mode (cross-OS)** — iOS publishes a GATT server
-///    on the symmetric service UUID that mirrors `BleOob.kt` on Android,
-///    and scans for the same UUID. Android advertises capability
-///    `[0x02]` as service-data so iOS can surface it as
-///    `accessory:android` without any vendor profile registration.
-///    Conversely, iOS BLE advertisements cannot carry service-data
-///    (Apple strips that field), so iOS conveys its capability byte
-///    `0x01` after connect via `MSG_CAPS = 0x03` on the NOTIFY
-///    characteristic.
-///
-/// 2. **FiRa accessory mode** — central-only; scans for any registered
-///    accessory profile's vendor service UUID, drives a long-lived GATT
-///    connection (`accessoryConnect` / `accessoryWrite` /
-///    `accessoryDisconnect`), and forwards bytes to
-///    `IosAccessoryStrategy` via `onAccessoryNotify`.
+/// Central-only: scans for any registered accessory profile's vendor
+/// service UUID, drives a long-lived GATT connection
+/// (`accessoryConnect` / `accessoryWrite` / `accessoryDisconnect`),
+/// and forwards bytes to `IosAccessoryStrategy` via
+/// `onAccessoryNotify`.
 ///
 /// iOS↔iOS peer-mode discovery and `NIDiscoveryToken` exchange is
-/// handled by `PeerOob` (MultipeerConnectivity) and is intentionally
-/// not part of this class. Foreground only.
+/// handled by `PeerOob` (MultipeerConnectivity). Foreground only.
 final class BleOob: NSObject {
-  // MARK: - Symmetric service UUIDs (mirror of Android's BleOob.kt)
-
-  static let symmetricServiceUuid =
-    CBUUID(string: "4F1A9A1C-08D8-4B2E-BC6B-6B1D9F8D7B21")
-  static let symmetricWriteUuid =
-    CBUUID(string: "B2D2A7F9-8C2A-4D7E-A89D-1D3A4E5F6A70")
-  static let symmetricNotifyUuid =
-    CBUUID(string: "C9A0A82B-0C5A-4B8E-9E2E-5DBE2D08F7C3")
-
-  /// Capability conveyance message type. Body is a single byte
-  /// matching `OobCapability.iosPeer` / `androidPeer`.
-  static let msgCapability: UInt8 = 0x03
-
-  /// Synthetic accessory profile for cross-OS peers connecting on the
-  /// symmetric service. Stored in `profileByID` for any peer matched
-  /// via service-data so `accessoryConnect` works without a registered
-  /// vendor profile. The Apple-FiRa protocol over this profile is
-  /// driven by `IosAccessoryStrategy` exactly as for vendor
-  /// accessories.
-  private static let symmetricAccessoryProfile = AccessoryProfile(
-    serviceUuid: symmetricServiceUuid,
-    rxUuid: symmetricWriteUuid,
-    txUuid: symmetricNotifyUuid
-  )
-
   // MARK: - Public surface
 
   /// Vendor-specific BLE profile for an Apple-FiRa accessory.
   ///
-  /// The protocol's byte format is fixed (see `apple_protocol.dart`),
-  /// but the BLE service and characteristic UUIDs are vendor-chosen.
-  /// Pass them in via `registerAccessoryProfile` from Dart.
+  /// The protocol's byte format is fixed by Apple's NI Accessory
+  /// Protocol, but the BLE service and characteristic UUIDs are
+  /// vendor-chosen. Pass them in via `registerAccessoryProfile` from
+  /// Dart.
   struct AccessoryProfile: Equatable {
     let serviceUuid: CBUUID
     /// Characteristic the iPhone writes to (the accessory's "Rx").
@@ -79,24 +43,14 @@ final class BleOob: NSObject {
     func onAccessoryFound(id: String, name: String, serviceUuid: String)
 
     /// Bytes pushed by the accessory via its Tx (notify)
-    /// characteristic. `bytes` is a fully-reassembled message
-    /// (BLE-level fragmentation is transparent to the caller).
+    /// characteristic.
     func onAccessoryNotify(id: String, bytes: Data)
 
-    /// A symmetric BLE peer (Android phone, future cross-OS host)
-    /// matching the shared service UUID has been seen. `capability`
-    /// is the parsed `OobCapability` byte from the advertisement
-    /// service-data (Android), defaulting to `androidPeer` when
-    /// missing.
-    func onSymmetricPeerFound(id: String, name: String, capability: UInt8)
-
-    /// A previously-connected accessory or symmetric peer
-    /// disconnected (peer-initiated, link loss, or our own
-    /// `accessoryDisconnect` call).
+    /// A previously-connected accessory disconnected (peer-initiated,
+    /// link loss, or our own `accessoryDisconnect` call).
     func onDisconnected(id: String, name: String)
 
-    /// Any non-recoverable BLE error. Surfaced as a transport error to
-    /// the active ranging session if one is running.
+    /// Any non-recoverable BLE error.
     func onError(_ message: String)
   }
 
@@ -105,18 +59,6 @@ final class BleOob: NSObject {
   // MARK: - Internal state
 
   private var central: CBCentralManager?
-  private var peripheral: CBPeripheralManager?
-
-  /// The mutable service we publish for symmetric peer mode. Re-added
-  /// on every peripheral state transition to `.poweredOn`.
-  private var symmetricService: CBMutableService?
-  private var symmetricWriteChar: CBMutableCharacteristic?
-  private var symmetricNotifyChar: CBMutableCharacteristic?
-  private var symmetricServiceAdded = false
-
-  /// Local advertising name passed via `start(localName:...)`. Used as
-  /// `CBAdvertisementDataLocalNameKey`.
-  private var localName: String = ""
 
   private(set) var started = false
   private var wantsScan = false
@@ -132,8 +74,7 @@ final class BleOob: NSObject {
     return central?.state == .poweredOn
   }
 
-  /// Configured accessory profiles. Forms the scan filter (in addition
-  /// to the symmetric service UUID, which is always scanned for).
+  /// Configured accessory profiles. Forms the scan filter.
   private var accessoryProfiles: [AccessoryProfile] = []
 
   private var peripheralsByID: [String: CBPeripheral] = [:]
@@ -142,8 +83,7 @@ final class BleOob: NSObject {
   /// callbacks can echo it without consulting `CBPeripheral.name`
   /// (which is sometimes nil after subscribe).
   private var nameByID: [String: String] = [:]
-  /// The accessory profile each discovered peripheral matched. Absent
-  /// for symmetric-peer discoveries.
+  /// The accessory profile each discovered peripheral matched.
   private var profileByID: [String: AccessoryProfile] = [:]
 
   /// Per-accessory connection state.
@@ -163,21 +103,16 @@ final class BleOob: NSObject {
     super.init()
   }
 
-  /// Start scanning for accessories and symmetric peers, and start
-  /// publishing the symmetric GATT service so other phones can find
-  /// us. Calling `start` twice without an intervening `stop` updates
-  /// the accessory-profile list and (re)kicks off scanning if the
-  /// radio is up.
-  func start(localName: String, accessoryProfiles: [AccessoryProfile]) {
-    dlog("BleOob.start name=\(localName) profiles=\(accessoryProfiles.count)")
-    self.localName = localName
+  /// Start scanning for registered accessory profiles. Calling `start`
+  /// twice without an intervening `stop` updates the accessory-profile
+  /// list and (re)kicks off scanning if the radio is up.
+  func start(accessoryProfiles: [AccessoryProfile]) {
+    dlog("BleOob.start profiles=\(accessoryProfiles.count)")
     self.accessoryProfiles = accessoryProfiles
     seenAdvertisers.removeAll()
     profileByID.removeAll()
     started = true
-    // Symmetric service UUID is always scanned for, so scanning is
-    // always wanted while started.
-    wantsScan = true
+    wantsScan = !accessoryProfiles.isEmpty
 
     if central == nil {
       central = CBCentralManager(delegate: self, queue: .main)
@@ -188,19 +123,13 @@ final class BleOob: NSObject {
     } else {
       attemptScanIfReady()
     }
-
-    if peripheral == nil {
-      peripheral = CBPeripheralManager(delegate: self, queue: .main)
-    } else {
-      attemptAdvertiseIfReady()
-    }
   }
 
-  /// Update the configured accessory profile list. Symmetric scanning
-  /// continues regardless. If a scan is currently active, restart it
-  /// with the new UUID filter.
+  /// Update the configured accessory profile list. If a scan is
+  /// currently active, restart it with the new UUID filter.
   func updateAccessoryProfiles(_ profiles: [AccessoryProfile]) {
     self.accessoryProfiles = profiles
+    wantsScan = !profiles.isEmpty
     guard let c = central else { return }
     if c.state == .poweredOn, c.isScanning {
       c.stopScan()
@@ -219,14 +148,6 @@ final class BleOob: NSObject {
         c.cancelPeripheralConnection(p)
       }
     }
-
-    if let pm = peripheral {
-      if pm.isAdvertising { pm.stopAdvertising() }
-      if symmetricServiceAdded, let svc = symmetricService {
-        pm.remove(svc)
-      }
-    }
-    symmetricServiceAdded = false
 
     seenAdvertisers.removeAll()
     peripheralsByID.removeAll()
@@ -303,9 +224,7 @@ final class BleOob: NSObject {
   // MARK: - Helpers
 
   private func scanFilter() -> [CBUUID] {
-    var ids: [CBUUID] = [BleOob.symmetricServiceUuid]
-    ids.append(contentsOf: accessoryProfiles.map(\.serviceUuid))
-    return ids
+    return accessoryProfiles.map(\.serviceUuid)
   }
 
   private func accessoryProfile(matching uuids: [CBUUID]) -> AccessoryProfile? {
@@ -324,53 +243,12 @@ final class BleOob: NSObject {
     }
     if !c.isScanning {
       let f = scanFilter()
+      guard !f.isEmpty else { return }
       dlog("scan: starting filter=\(f.count) uuids")
       c.scanForPeripherals(
         withServices: f,
         options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
       )
-    }
-  }
-
-  private func attemptAdvertiseIfReady() {
-    guard started else { return }
-    guard let pm = peripheral else { return }
-    guard pm.state == .poweredOn else { return }
-    if symmetricService == nil {
-      let writeChar = CBMutableCharacteristic(
-        type: BleOob.symmetricWriteUuid,
-        properties: [.write, .writeWithoutResponse],
-        value: nil,
-        permissions: [.writeable]
-      )
-      let notifyChar = CBMutableCharacteristic(
-        type: BleOob.symmetricNotifyUuid,
-        properties: [.notify, .read],
-        value: nil,
-        permissions: [.readable]
-      )
-      let svc = CBMutableService(
-        type: BleOob.symmetricServiceUuid,
-        primary: true
-      )
-      svc.characteristics = [writeChar, notifyChar]
-      symmetricWriteChar = writeChar
-      symmetricNotifyChar = notifyChar
-      symmetricService = svc
-    }
-    if !symmetricServiceAdded, let svc = symmetricService {
-      pm.add(svc)
-      symmetricServiceAdded = true
-    }
-    if !pm.isAdvertising {
-      var data: [String: Any] = [
-        CBAdvertisementDataServiceUUIDsKey: [BleOob.symmetricServiceUuid],
-      ]
-      if !localName.isEmpty {
-        data[CBAdvertisementDataLocalNameKey] = localName
-      }
-      dlog("peripheral: startAdvertising name=\(localName)")
-      pm.startAdvertising(data)
     }
   }
 
@@ -411,44 +289,19 @@ extension BleOob: CBCentralManagerDelegate {
     let advertisedUuids =
       (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
 
-    if let profile = accessoryProfile(matching: advertisedUuids) {
-      peripheralsByID[id] = peripheral
-      nameByID[id] = name
-      profileByID[id] = profile
-
-      if seenAdvertisers.insert(id).inserted {
-        callback?.onAccessoryFound(
-          id: id,
-          name: name,
-          serviceUuid: profile.serviceUuid.uuidString.uppercased()
-        )
-      }
+    guard let profile = accessoryProfile(matching: advertisedUuids) else {
       return
     }
+    peripheralsByID[id] = peripheral
+    nameByID[id] = name
+    profileByID[id] = profile
 
-    if advertisedUuids.contains(BleOob.symmetricServiceUuid) {
-      let serviceData =
-        (advertisementData[CBAdvertisementDataServiceDataKey]
-          as? [CBUUID: Data]) ?? [:]
-      let payload = serviceData[BleOob.symmetricServiceUuid]
-      dlog("scan: symmetric peer id=\(id) name=\(name) cap=\(payload?.map { String(format: "%02X", $0) }.joined() ?? "nil")")
-      let capability: UInt8
-      if let first = payload?.first {
-        capability = first
-      } else {
-        // No service-data — by convention this means the peer is
-        // another iOS device, since iOS BLE advertisements cannot
-        // carry service-data. Same-OS pairs go via MPC, so skip.
-        return
-      }
-      peripheralsByID[id] = peripheral
-      nameByID[id] = name
-      profileByID[id] = BleOob.symmetricAccessoryProfile
-      if seenAdvertisers.insert(id).inserted {
-        callback?.onSymmetricPeerFound(
-          id: id, name: name, capability: capability
-        )
-      }
+    if seenAdvertisers.insert(id).inserted {
+      callback?.onAccessoryFound(
+        id: id,
+        name: name,
+        serviceUuid: profile.serviceUuid.uuidString.uppercased()
+      )
     }
   }
 
@@ -595,61 +448,5 @@ extension BleOob: CBPeripheralDelegate {
       return
     }
     callback?.onAccessoryNotify(id: id, bytes: value)
-  }
-}
-
-// MARK: - CBPeripheralManagerDelegate (symmetric peer mode)
-
-extension BleOob: CBPeripheralManagerDelegate {
-  func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
-    dlog("peripheralManagerDidUpdateState state=\(peripheral.state.rawValue)")
-    switch peripheral.state {
-    case .poweredOn:
-      attemptAdvertiseIfReady()
-    case .poweredOff, .unauthorized, .unsupported:
-      callback?.onError(
-        "Bluetooth peripheral not available: \(peripheral.state.rawValue)"
-      )
-    default:
-      break
-    }
-  }
-
-  func peripheralManager(
-    _ peripheral: CBPeripheralManager,
-    didAdd service: CBService,
-    error: Error?
-  ) {
-    dlog("peripheralManager didAdd err=\(error?.localizedDescription ?? "nil")")
-    if let err = error {
-      callback?.onError("Failed to publish symmetric service: \(err.localizedDescription)")
-    }
-  }
-
-  func peripheralManagerDidStartAdvertising(
-    _ peripheral: CBPeripheralManager,
-    error: Error?
-  ) {
-    dlog("peripheralManagerDidStartAdvertising err=\(error?.localizedDescription ?? "nil")")
-    if let err = error {
-      callback?.onError("Symmetric advertising failed: \(err.localizedDescription)")
-    }
-  }
-
-  /// Central subscribed to our NOTIFY characteristic. Apple's FiRa
-  /// accessory protocol uses `0x03` for `accessoryUwbDidStop`, so we
-  /// must not pre-emit any frame here — the central side already
-  /// learned our capability from the missing service-data on the
-  /// scan advertisement (iOS BLE strips service-data; Android centrals
-  /// treat that absence as the iOS-peer signal). The first NOTIFY
-  /// frame the central sees on this channel is therefore the
-  /// accessory's own `0x01 AccessoryConfigurationData` reply driven by
-  /// `IosAccessoryStrategy` once a host writes `Initialize` (0x0A).
-  func peripheralManager(
-    _ peripheral: CBPeripheralManager,
-    central: CBCentral,
-    didSubscribeTo characteristic: CBCharacteristic
-  ) {
-    // intentionally empty
   }
 }

@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.0.0
+
+First stable release. The plugin now ships only the routing paths
+that actually deliver distance samples on real hardware:
+
+- iPhone ↔ iPhone via NearbyInteraction over MultipeerConnectivity.
+- Android ↔ Android via `androidx.core.uwb` 1.0.0 with ECDH-keyed
+  Provisioned STS over BLE OOB.
+- iPhone ↔ Apple-FiRa accessory (Qorvo, NXP, MFi tags) via the Apple
+  NI Accessory Protocol.
+
+### Removed
+
+- **Cross-OS (iPhone ↔ Android) routing.** The `OobCapability`
+  flag-based dispatch from 0.4.0, the symmetric BLE GATT server on
+  iOS, the `AndroidControleeStrategy` (Galaxy-as-Apple-FiRa-accessory)
+  path, and the iPhone-discovery handling on the Android side are all
+  gone. Three rounds of investigation against both an iPhone host and
+  a Qorvo DWM3001CDK reference responder confirmed the wall is at the
+  PHY / chip-firmware layer, below where this plugin can intervene.
+  No timeline for re-adding without chip-vendor cooperation.
+- `registerAccessoryProfile` is now iOS-only. Calling it on Android
+  returns a structured error rather than silently no-op'ing.
+- `OobCapability` (Dart, Kotlin, Swift) and `OobHandshake.swift` —
+  the cross-OS plumbing is unused after the routing change.
+
+### Notes for upgraders from 0.4.x
+
+- Same-OS code paths are unchanged. iOS↔iOS and Android↔Android
+  callers do not need to update beyond bumping the dependency.
+- If you were calling `registerAccessoryProfile` on Android, gate it
+  on `Platform.isIOS` (the example app does this).
+- iOS apps no longer publish a BLE GATT service on the symmetric
+  `4F1A9A1C-…` UUID. If you saw the iPhone advertising that UUID and
+  relied on it, it's gone.
+
 ## 0.4.1
 
 - Shrink the brand shields-style badge SVG to 137×20 (was 220×32) so

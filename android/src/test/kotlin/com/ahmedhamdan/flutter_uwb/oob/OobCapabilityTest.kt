@@ -25,24 +25,18 @@ class OobCapabilityTest {
             OobCapability.parse(byteArrayOf(OobCapability.IOS_PEER)),
         )
         assertEquals(
-            OobCapability.ACCESSORY_HOST,
-            OobCapability.parse(byteArrayOf(OobCapability.ACCESSORY_HOST, 0x77)),
+            OobCapability.ANDROID_PEER,
+            OobCapability.parse(byteArrayOf(OobCapability.ANDROID_PEER, 0x77)),
         )
     }
 
     @Test
-    fun iosPeerRoutesToAccessoryControleeStrategyOnAndroid() {
-        assertEquals(
-            "accessory:ios",
-            OobCapability.toAndroidPlatform(OobCapability.IOS_PEER),
-        )
-        assertEquals(
-            "android",
-            OobCapability.toAndroidPlatform(OobCapability.ANDROID_PEER),
-        )
-        assertEquals(
-            "android",
-            OobCapability.toAndroidPlatform(OobCapability.UNKNOWN_DEFAULT),
-        )
+    fun toAndroidPlatformAlwaysReturnsAndroid() {
+        // 1.0.0 only routes Android peers; non-Android capability bytes
+        // are dropped upstream by the host before this maps to a
+        // platform string.
+        assertEquals("android", OobCapability.toAndroidPlatform(OobCapability.ANDROID_PEER))
+        assertEquals("android", OobCapability.toAndroidPlatform(OobCapability.UNKNOWN_DEFAULT))
+        assertEquals("android", OobCapability.toAndroidPlatform(OobCapability.IOS_PEER))
     }
 }

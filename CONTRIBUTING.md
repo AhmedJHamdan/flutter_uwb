@@ -54,7 +54,7 @@ and `ios/Classes/UwbPigeon.g.swift` alongside your source change.
 
 ## Coding conventions
 
-These follow the project's `CLAUDE.md`; the short version:
+The short version:
 
 - 80-column lines.
 - `PascalCase` for classes, `camelCase` for members, `snake_case` for
