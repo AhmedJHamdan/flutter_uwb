@@ -29,17 +29,19 @@ import android.os.ParcelUuid
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
-import java.security.PrivateKey
 import java.util.UUID
 
+/**
+ * CoreBluetooth-based out-of-band transport for Android↔Android peer
+ * mode.
+ *
+ * The local device both advertises and scans the symmetric service
+ * UUID below. Peers exchange UWB tokens via an ECDH-keyed handshake on
+ * the GATT server's `CHAR_WRITE` / `CHAR_NOTIFY` pair. Apple-FiRa
+ * accessory mode is iOS-only in flutter_uwb 1.0.0; this class no
+ * longer participates in cross-OS or vendor-accessory flows.
+ */
 class BleOob(private val ctx: Context) {
-
-    /** A registered Apple-FiRa accessory profile. Mirror of the iOS struct. */
-    data class AccessoryProfile(
-        val serviceUuid: UUID,
-        val rxUuid: UUID,
-        val txUuid: UUID,
-    )
 
     interface Callback {
         /**
@@ -52,17 +54,6 @@ class BleOob(private val ctx: Context) {
         fun onConnected(id: String, name: String)
         fun onDisconnected(id: String, name: String)
         fun onError(msg: String)
-        /**
-         * Apple-protocol bytes received on a registered accessory profile's
-         * Rx characteristic. The host (UwbHostApiImpl) routes these to the
-         * active [AndroidControleeStrategy].
-         */
-        fun onAccessoryRequest(
-            id: String,
-            name: String,
-            serviceUuid: UUID,
-            bytes: ByteArray,
-        ) {}
     }
     private var cb: Callback? = null
     fun setCallback(c: Callback) { cb = c }
@@ -76,55 +67,8 @@ class BleOob(private val ctx: Context) {
     private companion object {
         const val MSG_HANDSHAKE: Byte = 0x01
         const val MSG_TOKEN: Byte = 0x02
-        /**
-         * Capability conveyance frame, sent by an iOS peripheral to
-         * Android centrals immediately after they subscribe to NOTIFY.
-         * Body is a single byte matching [OobCapability]. Required
-         * because iOS BLE advertisements cannot carry service-data, so
-         * the central learns the peer's platform on connect.
-         */
-        const val MSG_CAPS: Byte = 0x03
         const val PREFERRED_MTU: Int = 247
         const val DEFAULT_MTU: Int = 23
-
-        /**
-         * First-byte values an Apple-FiRa host writes on the symmetric
-         * `CHAR_WRITE`. Values come from
-         * `lib/src/accessory/apple_protocol.dart` and the WWDC 2022
-         * `NIAccessory.swift` sample.
-         */
-        const val AppleHostInitialize: Byte = 0x0A
-        const val AppleHostConfigureAndStart: Byte = 0x0B
-        const val AppleHostStop: Byte = 0x0C
-    }
-
-    private var accessoryProfiles: List<AccessoryProfile> = emptyList()
-    private val accessoryTxChars = HashMap<UUID, BluetoothGattCharacteristic>()
-
-    /**
-     * Per-central role on the GATT server, decided by the first byte
-     * written to the symmetric `CHAR_WRITE` characteristic. iOS hosts
-     * write `Initialize` (0x0A) first; Android peers write
-     * `MSG_HANDSHAKE` (0x01) first. The two value spaces don't overlap
-     * for first-byte purposes (Apple host messages are 0x0A/0x0B/0x0C,
-     * peer-mode messages are 0x01/0x02), so the dispatch is
-     * unambiguous.
-     */
-    private enum class CentralMode { PeerHandshake, AppleAccessory }
-    private val centralModes = HashMap<String, CentralMode>()
-
-    /**
-     * For centrals routed to [CentralMode.AppleAccessory], the service
-     * UUID of the BLE service they connected on. Picks the right
-     * NOTIFY characteristic for outbound `accessoryNotify` calls (the
-     * symmetric `SVC` for cross-OS iOS hosts, or the vendor profile's
-     * `txUuid` for registered Apple-FiRa accessory profiles).
-     */
-    private val accessoryServiceByCentral = HashMap<String, UUID>()
-
-    private fun isAppleHostMessage(first: Byte): Boolean = when (first) {
-        AppleHostInitialize, AppleHostConfigureAndStart, AppleHostStop -> true
-        else -> false
     }
 
     private val btMgr by lazy { ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager }
@@ -180,7 +124,7 @@ class BleOob(private val ctx: Context) {
     }
 
     fun start(localName: String) {
-        Log.i("flutter_uwb", "BleOob.start name=$localName profiles=${accessoryProfiles.size}")
+        Log.i("flutter_uwb", "BleOob.start name=$localName")
         val a = adapter
         if (a == null || !a.isEnabled) { cb?.onError("Bluetooth disabled or unavailable"); return }
         if (!permsOk()) { cb?.onError("Bluetooth permissions missing"); return }
@@ -191,8 +135,6 @@ class BleOob(private val ctx: Context) {
         serverKeys.clear()
         serverReassemblers.clear()
         serverMtus.clear()
-        centralModes.clear()
-        accessoryServiceByCentral.clear()
 
         val serverCb = object : BluetoothGattServerCallback() {
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
@@ -203,8 +145,6 @@ class BleOob(private val ctx: Context) {
                     serverKeys.remove(device.address)
                     serverReassemblers.remove(device.address)
                     serverMtus.remove(device.address)
-                    centralModes.remove(device.address)
-                    accessoryServiceByCentral.remove(device.address)
                 }
             }
 
@@ -228,44 +168,7 @@ class BleOob(private val ctx: Context) {
                             value.joinToString("") { "%02X".format(it) }
                         }",
                     )
-                    val mode = centralModes[device.address] ?: run {
-                        val first = if (value.isNotEmpty()) value[0] else 0
-                        val initial = if (isAppleHostMessage(first)) {
-                            CentralMode.AppleAccessory
-                        } else {
-                            CentralMode.PeerHandshake
-                        }
-                        centralModes[device.address] = initial
-                        initial
-                    }
-                    if (mode == CentralMode.AppleAccessory) {
-                        pendingCentrals[device.address] = device
-                        accessoryServiceByCentral[device.address] = SVC
-                        cb?.onAccessoryRequest(
-                            id = device.address,
-                            name = deviceNameSafe(device),
-                            serviceUuid = SVC,
-                            bytes = value,
-                        )
-                    } else {
-                        handleServerInbound(device, value)
-                    }
-                } else {
-                    val profile = accessoryProfiles.firstOrNull {
-                        it.rxUuid == characteristic.uuid
-                    }
-                    if (profile != null) {
-                        pendingCentrals[device.address] = device
-                        centralModes[device.address] = CentralMode.AppleAccessory
-                        accessoryServiceByCentral[device.address] =
-                            profile.serviceUuid
-                        cb?.onAccessoryRequest(
-                            id = device.address,
-                            name = deviceNameSafe(device),
-                            serviceUuid = profile.serviceUuid,
-                            bytes = value,
-                        )
-                    }
+                    handleServerInbound(device, value)
                 }
                 if (responseNeeded) {
                     gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
@@ -293,12 +196,10 @@ class BleOob(private val ctx: Context) {
                 offset: Int,
                 value: ByteArray,
             ) {
-                // Standard CCCD subscribe — iOS / Jetpack-UWB centrals
-                // both write [0x01, 0x00] to enable notifications.
-                // Without an explicit ack the central times out waiting
-                // for the response (~30 s) and disconnects, which is why
-                // cross-OS pair-and-range never reached the Apple-FiRa
-                // exchange before this handler existed.
+                // Standard CCCD subscribe — Jetpack-UWB centrals write
+                // [0x01, 0x00] to enable notifications. Without an
+                // explicit ack the central times out waiting for the
+                // response (~30 s) and disconnects.
                 if (responseNeeded) {
                     gattServer?.sendResponse(
                         device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null,
@@ -327,44 +228,12 @@ class BleOob(private val ctx: Context) {
         }
         gattServer?.addService(service)
 
-        accessoryTxChars.clear()
-        for (profile in accessoryProfiles) {
-            val accessoryService = BluetoothGattService(
-                profile.serviceUuid,
-                BluetoothGattService.SERVICE_TYPE_PRIMARY,
-            )
-            accessoryService.addCharacteristic(
-                BluetoothGattCharacteristic(
-                    profile.rxUuid,
-                    BluetoothGattCharacteristic.PROPERTY_WRITE
-                        or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
-                    BluetoothGattCharacteristic.PERMISSION_WRITE,
-                ),
-            )
-            val txChar = BluetoothGattCharacteristic(
-                profile.txUuid,
-                BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-                BluetoothGattCharacteristic.PERMISSION_READ,
-            ).apply {
-                addDescriptor(
-                    BluetoothGattDescriptor(
-                        CCCD,
-                        BluetoothGattDescriptor.PERMISSION_READ
-                            or BluetoothGattDescriptor.PERMISSION_WRITE,
-                    ),
-                )
-            }
-            accessoryService.addCharacteristic(txChar)
-            accessoryTxChars[profile.serviceUuid] = txChar
-            gattServer?.addService(accessoryService)
-        }
-
         advertiser = a.bluetoothLeAdvertiser
         // Legacy BLE advert is capped at 31 bytes — a 128-bit service
         // UUID alone is 18 B, leaving no room for service-data in the
         // primary packet. Put the capability byte in the scan response
-        // so an active scanner (iOS / Android) gets both packets
-        // merged into a single discovery callback.
+        // so an active scanner gets both packets merged into a single
+        // discovery callback.
         val adData = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addServiceUuid(ParcelUuid(SVC))
@@ -405,54 +274,12 @@ class BleOob(private val ctx: Context) {
         gattServer = null
         pendingCentrals.clear()
         seenAdvertisers.clear()
-        accessoryTxChars.clear()
         serverHandshakes.clear()
         serverKeys.clear()
         serverReassemblers.clear()
         serverMtus.clear()
-        centralModes.clear()
-        accessoryServiceByCentral.clear()
         resetClientState()
         TokenStore.clear()
-    }
-
-    /**
-     * Update the registered accessory profile list. If the GATT server
-     * is currently up the change is picked up the next time [start] is
-     * called; the host typically calls `stop()` then `start()` after a
-     * register/unregister.
-     */
-    fun setAccessoryProfiles(profiles: List<AccessoryProfile>) {
-        accessoryProfiles = profiles
-    }
-
-    /**
-     * Push notify bytes via a registered accessory profile's Tx
-     * characteristic to the central that initiated the exchange.
-     *
-     * `deviceId` is the BLE address of the central (matches the address
-     * surfaced via [Callback.onAccessoryRequest]).
-     */
-    /**
-     * Push host-bound bytes (Apple-FiRa accessory protocol response)
-     * back to a connected central. The target characteristic depends
-     * on which service the central is using:
-     *
-     * - Symmetric cross-OS (`SVC` / `CHAR_NOTIFY`) — used when an iOS
-     *   host connects over the shared symmetric profile, no
-     *   per-vendor `AccessoryProfile` registered.
-     * - Vendor-specific accessory profile — first registered profile's
-     *   `txUuid`. Multi-profile selection is a follow-up.
-     */
-    fun accessoryNotify(deviceId: String, bytes: ByteArray) {
-        val device = pendingCentrals[deviceId] ?: return
-        val service = accessoryServiceByCentral[deviceId] ?: SVC
-        val ch = if (service == SVC) {
-            gattServer?.getService(SVC)?.getCharacteristic(CHAR_NOTIFY)
-        } else {
-            accessoryTxChars[service]
-        } ?: return
-        notify(device, ch, bytes)
     }
 
     private val scanCb = object : ScanCallback() {
@@ -466,10 +293,11 @@ class BleOob(private val ctx: Context) {
                 "scan hit addr=$addr name=${deviceNameSafe(d)} svcData=${
                     data?.joinToString("") { "%02X".format(it) } ?: "nil"
                 }")
-            // iOS BLE advertisements cannot carry service-data, so a
-            // peer advertising the symmetric service UUID with no
-            // service-data is by convention an iOS host. Android
-            // always emits `[ANDROID_PEER]`.
+            // iOS BLE advertisements cannot carry service-data, so an
+            // ad on the symmetric service UUID with no service-data is
+            // by convention not an Android peer. Surface the byte to
+            // the host; the host filters non-Android peers because
+            // flutter_uwb 1.0.0 only ranges Android↔Android.
             val capability: Byte = if (data == null || data.isEmpty()) {
                 OobCapability.IOS_PEER
             } else {
@@ -508,8 +336,6 @@ class BleOob(private val ctx: Context) {
         serverKeys.remove(deviceId)
         serverReassemblers.remove(deviceId)
         serverMtus.remove(deviceId)
-        centralModes.remove(deviceId)
-        accessoryServiceByCentral.remove(deviceId)
     }
 
     fun exchange(

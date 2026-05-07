@@ -1,19 +1,18 @@
 package com.ahmedhamdan.flutter_uwb.oob
 
 /**
- * 1-byte capability flag advertised in BLE service-data so the local
- * Android stack can route iOS↔Android pairs through accessory mode and
- * keep same-OS pairs on peer mode without guessing.
+ * 1-byte capability flag advertised in BLE service-data alongside the
+ * symmetric flutter_uwb service UUID.
  *
- * Mirrors `lib/src/oob_capability.dart` and the iOS `OobCapability`
- * enum. Values `0x03`–`0xFF` are reserved; unknown values are treated
- * as [ANDROID_PEER] for back-compat with 0.3.x peers that did not
- * advertise this byte.
+ * In flutter_uwb 1.0.0 the only routed peer kind on Android is another
+ * Android phone running flutter_uwb. The remaining values are kept on
+ * the wire so a peer that advertises [IOS_PEER] (or no service-data,
+ * which is interpreted the same way) is dropped at the discovery
+ * layer rather than treated as an Android peer.
  */
 object OobCapability {
     const val IOS_PEER: Byte = 0x01
     const val ANDROID_PEER: Byte = 0x02
-    const val ACCESSORY_HOST: Byte = 0x03
 
     /** Applied to peers whose advertisement omits service-data. */
     const val UNKNOWN_DEFAULT: Byte = ANDROID_PEER
@@ -35,14 +34,9 @@ object OobCapability {
 
     /**
      * Map a remote capability byte to the `UwbDevice.platform` string
-     * used by the strategy dispatcher when the local stack is Android.
-     *
-     * - Remote iOS peer → `accessory:ios` so the existing dispatcher
-     *   sends it to `AndroidControleeStrategy`.
-     * - Anything else → `android` (peer mode).
+     * surfaced through Pigeon. Only Android peers reach the strategy
+     * dispatcher in 1.0.0.
      */
-    fun toAndroidPlatform(capability: Byte): String = when (capability) {
-        IOS_PEER -> "accessory:ios"
-        else -> "android"
-    }
+    fun toAndroidPlatform(@Suppress("UNUSED_PARAMETER") capability: Byte): String =
+        "android"
 }
