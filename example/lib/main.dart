@@ -82,14 +82,17 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _checkReadiness();
-    // Register the Qorvo accessory profile so DWM3001CDK boards surface in
-    // the same `deviceFound` stream as iOS / Android peers.
-    _uwb.registerAccessoryProfile(
-      serviceUuid: _QorvoProfile.serviceUuid,
-      rxUuid: _QorvoProfile.rxUuid,
-      txUuid: _QorvoProfile.txUuid,
-      vendorTag: _QorvoProfile.vendorTag,
-    );
+    // Register the Qorvo accessory profile so DWM3001CDK boards surface
+    // in the same `deviceFound` stream as iOS peers. Accessory mode is
+    // iOS-only in flutter_uwb 1.0.0; the call would throw on Android.
+    if (Platform.isIOS) {
+      _uwb.registerAccessoryProfile(
+        serviceUuid: _QorvoProfile.serviceUuid,
+        rxUuid: _QorvoProfile.rxUuid,
+        txUuid: _QorvoProfile.txUuid,
+        vendorTag: _QorvoProfile.vendorTag,
+      );
+    }
     _deviceFoundSub = _uwb.deviceFound.listen((d) {
       if (!mounted) return;
       setState(() => _devicesById[d.id] = d);
@@ -628,17 +631,19 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          _SettingsSection(
-            title: 'Accessory profiles',
-            subtitle: 'BLE service triplets the host scans for.',
-            children: [
-              _InfoRow(
-                label: _QorvoProfile.vendorTag,
-                value: _QorvoProfile.serviceUuid,
-              ),
-            ],
-          ),
+          if (Platform.isIOS) ...[
+            const SizedBox(height: 16),
+            _SettingsSection(
+              title: 'Accessory profiles',
+              subtitle: 'BLE service triplets the host scans for.',
+              children: [
+                _InfoRow(
+                  label: _QorvoProfile.vendorTag,
+                  value: _QorvoProfile.serviceUuid,
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
