@@ -12,11 +12,12 @@
 
 ## <img src="assets/brand/flutter_uwb_pulse.svg" width="20" align="left"/> Features
 
-- **Distance + direction** — sub-10 cm distance and azimuth/elevation when the hardware supports it.
+- **Distance + direction** — centimeter-level distance and azimuth/elevation when the hardware supports it.
 - **No signalling server** — peers discover each other over BLE / MultipeerConnectivity; the plugin handles UWB token exchange end-to-end.
 - **One Dart API, two platforms** — same surface for Android (`androidx.core.uwb`) and iOS (`NearbyInteraction`).
 - **Apple FiRa accessories** — talk to Qorvo, NXP, and other certified UWB tags from iOS out of the box.
-- **End-to-end encrypted** — Android↔Android sessions are keyed by an X25519 ECDH handshake; iOS↔iOS uses MultipeerConnectivity's required-encryption.
+- **End-to-end encrypted** — every Android↔Android session uses a fresh per-pair key; iOS rides Apple's protected discovery channels.
+- **Production-ready** — readiness checks tell you what's supported and which permissions to ask for; typed error codes tell you exactly why something failed, so apps can recover gracefully instead of showing platform stack traces.
 - **Streams everywhere** — discovery, ranging samples, errors, and lifecycle events as `Stream`s you can plug into any state-management solution.
 
 ## What ranges against what
@@ -58,17 +59,25 @@ final uwb = FlutterUwb.instance;
 
 if (!await uwb.isUwbAvailable()) return;
 
-await uwb.startDiscovery('phone-A');
-
-uwb.deviceFound.listen((device) async {
-  await uwb.pairWith(device.id);     // exchanges UWB tokens
-  await uwb.startRanging(device.id); // begin streaming samples
+// Acceptor side — auto-respond when a peer initiates pairing.
+uwb.incomingRequests.listen((req) async {
+  final myToken = await uwb.getLocalToken(UwbRole.controlee);
+  await uwb.acceptRequest(req.device.id, myToken);
+  await uwb.startRanging(req.device.id);
 });
 
 uwb.rangingSamples.listen((s) {
   print('${s.distanceMeters.toStringAsFixed(2)} m  '
         '${s.azimuthDegrees?.toStringAsFixed(1)}°');
 });
+
+await uwb.startDiscovery('phone-A');
+
+// Initiator side — call from your UI when the user picks a peer.
+Future<void> pairAndRange(UwbDevice device) async {
+  await uwb.pairWith(device.id);     // sends our token, gets the peer's
+  await uwb.startRanging(device.id);
+}
 ```
 
 When you're done:
@@ -78,19 +87,20 @@ await uwb.stopRanging();
 await uwb.stopDiscovery();
 ```
 
-> **Both** peers must call `pairWith` before either calls `startRanging`. Trigger this from your own UI (a button, a QR scan, a server event — whatever fits).
+> Pairing is asymmetric: one side calls `pairWith` (the initiator); the other side's `incomingRequests` stream fires and that side calls `acceptRequest`. Both sides then call `startRanging`. Trigger the initiator from your own UI — a button, a QR scan, a server event, whatever fits.
 
 A complete runnable demo lives in [`example/`](example/).
 
 ## API
 
-| Stream            | Fires when                                                |
-| ----------------- | --------------------------------------------------------- |
-| `deviceFound`     | A new peer is discovered via BLE / MPC                    |
-| `deviceLost`      | A previously-discovered peer disappears                   |
-| `rangingSamples`  | A new `RangingSample` arrives from the active session     |
-| `peerLost`        | The ranging peer disconnects mid-session                  |
-| `rangingErrors`   | A platform error occurs inside the active session         |
+| Stream             | Fires when                                                |
+| ------------------ | --------------------------------------------------------- |
+| `deviceFound`      | A new peer is discovered via BLE / MPC                    |
+| `deviceLost`       | A previously-discovered peer disappears                   |
+| `incomingRequests` | A peer sends us their UWB token; reply with `acceptRequest` or `declineRequest` |
+| `rangingSamples`   | A new `RangingSample` arrives from the active session     |
+| `peerLost`         | The ranging peer disconnects mid-session                  |
+| `rangingErrors`    | A platform error occurs inside the active session         |
 
 `RangingSample` exposes `distanceMeters`, `azimuthDegrees`, `elevationDegrees`, `elapsedRealtimeNanos` and the originating `deviceId`. All mutating methods throw `UwbException` on failure.
 
@@ -98,7 +108,7 @@ A complete runnable demo lives in [`example/`](example/).
 
 `checkReadiness()` returns a snapshot of the UWB radio, Bluetooth, and runtime-permission state — use it before `startDiscovery` / `startRanging` to drive an onboarding flow without trying to range first and catching the failure.
 
-For accessory mode (Qorvo, NXP, third-party Apple-FiRa tags) on iOS, register the vendor's BLE service triplet with `registerAccessoryProfile(serviceUuid, rxUuid, txUuid, vendorTag)`. The plugin then surfaces those tags in the same `deviceFound` stream as iPhone peers, and `pairWith` / `startRanging` drive Apple's NI Accessory Protocol behind the scenes. **Accessory mode is iOS-only.**
+For accessory mode (Qorvo, NXP, third-party Apple-FiRa tags) on iOS, register the vendor's BLE service triplet with `registerAccessoryProfile(serviceUuid, rxUuid, txUuid, vendorTag)`. The plugin surfaces those tags in the same `deviceFound` stream as iPhone peers; call `startRanging(device.id)` directly — accessories handshake via Apple's NI Accessory Protocol, no token exchange needed. **Accessory mode is iOS-only.**
 
 Full API docs: <https://pub.dev/documentation/flutter_uwb/latest/>
 
