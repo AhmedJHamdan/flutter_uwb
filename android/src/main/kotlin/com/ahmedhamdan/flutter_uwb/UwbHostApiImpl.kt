@@ -57,7 +57,6 @@ class UwbHostApiImpl(
     private val discovered = LinkedHashMap<String, UwbDevice>()
 
     private var uwbManager: UwbManager? = null
-    // not used by strategies
     private var controllerScope: UwbControllerSessionScope? = null
     private var controleeScope: UwbControleeSessionScope? = null
     private var localSessionId: Int = 0
