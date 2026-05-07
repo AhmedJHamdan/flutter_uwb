@@ -75,7 +75,10 @@ await uwb.startDiscovery('phone-A');
 
 // Initiator side — call from your UI when the user picks a peer.
 Future<void> pairAndRange(UwbDevice device) async {
-  await uwb.pairWith(device.id);     // sends our token, gets the peer's
+  // Accessories handshake via the Apple NI Accessory Protocol — skip pairWith.
+  if (!device.platform.startsWith('accessory')) {
+    await uwb.pairWith(device.id);
+  }
   await uwb.startRanging(device.id);
 }
 ```
@@ -88,6 +91,23 @@ await uwb.stopDiscovery();
 ```
 
 > Pairing is asymmetric: one side calls `pairWith` (the initiator); the other side's `incomingRequests` stream fires and that side calls `acceptRequest`. Both sides then call `startRanging`. Trigger the initiator from your own UI — a button, a QR scan, a server event, whatever fits.
+
+### Apple-FiRa accessories (iOS only)
+
+To range against a Qorvo, NXP, or third-party Apple-FiRa tag, register the vendor's BLE service triplet before `startDiscovery`:
+
+```dart
+await uwb.registerAccessoryProfile(
+  serviceUuid: '<accessory service UUID>',
+  rxUuid:      '<accessory rx UUID>',
+  txUuid:      '<accessory tx UUID>',
+  vendorTag:   'my-tag', // optional — surfaces as `accessory:my-tag`
+);
+```
+
+The accessory shows up in `deviceFound` with `device.platform == 'accessory:my-tag'`. The Quick Start's `pairAndRange` already handles it — the platform check skips `pairWith` and lets `startRanging` drive Apple's NI Accessory Protocol. Calling `registerAccessoryProfile` on Android throws `UwbException` (iOS-only in 1.0.0).
+
+See [`example/lib/main.dart`](example/lib/main.dart) for a working Qorvo DWM3001CDK profile.
 
 A complete runnable demo lives in [`example/`](example/).
 
@@ -107,8 +127,6 @@ A complete runnable demo lives in [`example/`](example/).
 `startRanging` accepts an optional `RangingOptions(cameraAssist, extendedDistance)` for iOS opt-ins. Use `getDeviceCapabilities()` to gate the toggles in your UI.
 
 `checkReadiness()` returns a snapshot of the UWB radio, Bluetooth, and runtime-permission state — use it before `startDiscovery` / `startRanging` to drive an onboarding flow without trying to range first and catching the failure.
-
-For accessory mode (Qorvo, NXP, third-party Apple-FiRa tags) on iOS, register the vendor's BLE service triplet with `registerAccessoryProfile(serviceUuid, rxUuid, txUuid, vendorTag)`. The plugin surfaces those tags in the same `deviceFound` stream as iPhone peers; call `startRanging(device.id)` directly — accessories handshake via Apple's NI Accessory Protocol, no token exchange needed. **Accessory mode is iOS-only.**
 
 Full API docs: <https://pub.dev/documentation/flutter_uwb/latest/>
 
