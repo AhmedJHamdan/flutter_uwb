@@ -117,7 +117,7 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     discovered.removeAll()
     peerTokens.removeAll()
     failPendingExchanges(with: PluginError.cancelled)
-    ble.start(localName: localName, accessoryProfiles: bleAccessoryProfiles())
+    ble.start(accessoryProfiles: bleAccessoryProfiles())
     peer.start(localName: localName)
     return VoidResult(ok: true)
   }
@@ -409,9 +409,9 @@ enum PluginError: LocalizedError {
 extension UwbHostApiImpl: BleOob.Callback, PeerOob.Callback {
   // MARK: PeerOob — iOS↔iOS peer discovery + token exchange
 
-  func onPeerDeviceFound(id: String, name: String, capability: UInt8) {
-    let platform = OobCapability.toIosPlatform(capability)
-    let device = UwbDevice(id: id, name: name, platform: platform)
+  func onPeerDeviceFound(id: String, name: String) {
+    // MPC only reaches other iOS peers running flutter_uwb.
+    let device = UwbDevice(id: id, name: name, platform: "ios")
     let isNew = discovered[id] == nil
     discovered[id] = device
     if isNew {
@@ -475,16 +475,6 @@ extension UwbHostApiImpl: BleOob.Callback, PeerOob.Callback {
   func onAccessoryFound(id: String, name: String, serviceUuid: String) {
     let vendorTag = registeredProfiles[serviceUuid.uppercased()]?.vendorTag
     let platform = vendorTag.map { "accessory:\($0)" } ?? "accessory"
-    let device = UwbDevice(id: id, name: name, platform: platform)
-    let isNew = discovered[id] == nil
-    discovered[id] = device
-    if isNew {
-      flutterApi.onDeviceFound(device: device) { _ in }
-    }
-  }
-
-  func onSymmetricPeerFound(id: String, name: String, capability: UInt8) {
-    let platform = OobCapability.toIosPlatform(capability)
     let device = UwbDevice(id: id, name: name, platform: platform)
     let isNew = discovered[id] == nil
     discovered[id] = device
