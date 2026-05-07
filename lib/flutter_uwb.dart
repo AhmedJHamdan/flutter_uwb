@@ -225,7 +225,7 @@ class FlutterUwb {
   /// adapter framework to the static-pair adapter, which returns
   /// hardcoded FiRa params for bench-testing against a Qorvo
   /// DWM3001CDK running CLI firmware.
-  void _seedStaticPairTileIfReady(String? profileVendorTag) {
+  Future<void> _seedStaticPairTileIfReady(String? profileVendorTag) async {
     if (profileVendorTag != 'qorvo') return;
     if (_adapterRegistry.lookup(staticPairQorvoVendorTag) == null) return;
     if (_knownDevices.containsKey(staticPairQorvoDeviceId)) return;
@@ -234,8 +234,42 @@ class FlutterUwb {
       name: staticPairQorvoDeviceName,
       platform: 'accessory:$staticPairQorvoVendorTag',
     );
+    await surfaceAccessoryDevice(device);
+  }
+
+  /// Surface a synthetic accessory device into the discovered list.
+  ///
+  /// Used by built-in adapters (e.g. the static-pair Qorvo tile) and by
+  /// custom adapters that synthesize devices without a real BLE scan
+  /// hit. Updates both the local [deviceFound] stream and the native
+  /// dispatcher's discovered map so a subsequent [startRanging] for
+  /// [device.id] resolves correctly.
+  ///
+  /// Android-only: on iOS the platform throws `unsupported` from the
+  /// underlying Pigeon channel; this method swallows that error since
+  /// the framework is Android-only in v1.
+  Future<void> surfaceAccessoryDevice(UwbDevice device) async {
     _knownDevices[device.id] = device;
     if (!_deviceFound.isClosed) _deviceFound.add(device);
+    try {
+      await _api.surfaceAccessoryDevice(device);
+    } catch (_) {
+      // Best-effort. iOS throws `unsupported` (framework is Android-only);
+      // the native side simply won't know about the device, which is
+      // fine because iOS doesn't dispatch through DartDrivenAccessoryStrategy.
+    }
+  }
+
+  /// Inverse of [surfaceAccessoryDevice]. Removes the device from both
+  /// the local stream and the native discovered map.
+  Future<void> unsurfaceAccessoryDevice(String deviceId) async {
+    _knownDevices.remove(deviceId);
+    if (!_deviceLost.isClosed) _deviceLost.add(deviceId);
+    try {
+      await _api.unsurfaceAccessoryDevice(deviceId);
+    } catch (_) {
+      // Same as surfaceAccessoryDevice — iOS no-ops.
+    }
   }
 
   /// Remove a previously-registered accessory profile.

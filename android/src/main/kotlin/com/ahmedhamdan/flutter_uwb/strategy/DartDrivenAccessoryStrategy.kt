@@ -79,6 +79,23 @@ class DartDrivenAccessoryStrategy(
             "DIAG dart-driven-handshake-info ts=${SystemClock.elapsedRealtimeNanos()} " +
                 "deviceId=$deviceId vendorTag=$vendorTag",
         )
+        // Synthetic devices (e.g. the static-pair Qorvo tile seeded
+        // from Dart) have no real BLE accessory to connect to. Fire
+        // CONNECTED immediately so the Dart adapter can return its
+        // hardcoded FiRa params without a transport layer in between.
+        if (!ble.hasAccessoryDevice(deviceId)) {
+            Log.i(
+                tag,
+                "dart-driven: $deviceId is synthetic (no BLE profile match) " +
+                    "— firing CONNECTED directly",
+            )
+            state = State.Handshaking
+            flutterApi.onAccessoryHandshakeEvent(
+                deviceId,
+                AccessoryHandshakeEvent(kind = AccessoryHandshakeEventKind.CONNECTED),
+            ) {}
+            return
+        }
         // BleOob fires onReady on the BLE binder thread. Hop to
         // rangingScope (main) before touching flutterApi.
         ble.accessoryConnect(deviceId) { ready ->
@@ -290,7 +307,11 @@ class DartDrivenAccessoryStrategy(
                 ),
             ) {}
         } catch (_: Throwable) {}
-        try { ble.accessoryDisconnect(deviceId) } catch (_: Throwable) {}
+        // Only tear down BLE when there was actually a BLE link to
+        // close — synthetic devices never opened one.
+        if (ble.hasAccessoryDevice(deviceId)) {
+            try { ble.accessoryDisconnect(deviceId) } catch (_: Throwable) {}
+        }
         state = State.Idle
     }
 

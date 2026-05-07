@@ -537,8 +537,10 @@ private class UwbHostApiCodecReader: FlutterStandardReader {
       case 133:
         return UwbDevice.fromList(self.readValue() as! [Any?])
       case 134:
-        return UwbReadiness.fromList(self.readValue() as! [Any?])
+        return UwbDevice.fromList(self.readValue() as! [Any?])
       case 135:
+        return UwbReadiness.fromList(self.readValue() as! [Any?])
+      case 136:
         return VoidResult.fromList(self.readValue() as! [Any?])
       default:
         return super.readValue(ofType: type)
@@ -566,11 +568,14 @@ private class UwbHostApiCodecWriter: FlutterStandardWriter {
     } else if let value = value as? UwbDevice {
       super.writeByte(133)
       super.writeValue(value.toList())
-    } else if let value = value as? UwbReadiness {
+    } else if let value = value as? UwbDevice {
       super.writeByte(134)
       super.writeValue(value.toList())
-    } else if let value = value as? VoidResult {
+    } else if let value = value as? UwbReadiness {
       super.writeByte(135)
+      super.writeValue(value.toList())
+    } else if let value = value as? VoidResult {
+      super.writeByte(136)
       super.writeValue(value.toList())
     } else {
       super.writeValue(value)
@@ -628,6 +633,15 @@ protocol UwbHostApi {
   /// `accessory:<vendorTag>` `startRanging` calls through the
   /// Dart-driven path; iOS throws `unsupported`.
   func setRegisteredAdapterTags(vendorTags: [String], completion: @escaping (Result<VoidResult, Error>) -> Void)
+  /// Surface a Dart-supplied accessory device on the native discovered
+  /// map so a subsequent [startRanging] resolves to a strategy. Used
+  /// by built-in adapters (e.g. the static-pair Qorvo tile) and by
+  /// custom adapters that synthesize devices without a real BLE scan
+  /// hit. iOS throws `unsupported`.
+  func surfaceAccessoryDevice(device: UwbDevice, completion: @escaping (Result<VoidResult, Error>) -> Void)
+  /// Inverse of [surfaceAccessoryDevice]. Removes the synthetic device
+  /// from the native discovered map. iOS throws `unsupported`.
+  func unsurfaceAccessoryDevice(deviceId: String, completion: @escaping (Result<VoidResult, Error>) -> Void)
   /// Open the BLE handshake link for [deviceId] and start emitting
   /// [UwbFlutterApi.onAccessoryHandshakeEvent] events. The adapter's
   /// `handshake` callback runs on the Dart side and writes back via
@@ -902,6 +916,47 @@ class UwbHostApiSetup {
       }
     } else {
       setRegisteredAdapterTagsChannel.setMessageHandler(nil)
+    }
+    /// Surface a Dart-supplied accessory device on the native discovered
+    /// map so a subsequent [startRanging] resolves to a strategy. Used
+    /// by built-in adapters (e.g. the static-pair Qorvo tile) and by
+    /// custom adapters that synthesize devices without a real BLE scan
+    /// hit. iOS throws `unsupported`.
+    let surfaceAccessoryDeviceChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.flutter_uwb.UwbHostApi.surfaceAccessoryDevice", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      surfaceAccessoryDeviceChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let deviceArg = args[0] as! UwbDevice
+        api.surfaceAccessoryDevice(device: deviceArg) { result in
+          switch result {
+            case .success(let res):
+              reply(wrapResult(res))
+            case .failure(let error):
+              reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      surfaceAccessoryDeviceChannel.setMessageHandler(nil)
+    }
+    /// Inverse of [surfaceAccessoryDevice]. Removes the synthetic device
+    /// from the native discovered map. iOS throws `unsupported`.
+    let unsurfaceAccessoryDeviceChannel = FlutterBasicMessageChannel(name: "dev.flutter.pigeon.flutter_uwb.UwbHostApi.unsurfaceAccessoryDevice", binaryMessenger: binaryMessenger, codec: codec)
+    if let api = api {
+      unsurfaceAccessoryDeviceChannel.setMessageHandler { message, reply in
+        let args = message as! [Any?]
+        let deviceIdArg = args[0] as! String
+        api.unsurfaceAccessoryDevice(deviceId: deviceIdArg) { result in
+          switch result {
+            case .success(let res):
+              reply(wrapResult(res))
+            case .failure(let error):
+              reply(wrapError(error))
+          }
+        }
+      }
+    } else {
+      unsurfaceAccessoryDeviceChannel.setMessageHandler(nil)
     }
     /// Open the BLE handshake link for [deviceId] and start emitting
     /// [UwbFlutterApi.onAccessoryHandshakeEvent] events. The adapter's

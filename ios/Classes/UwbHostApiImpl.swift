@@ -382,6 +382,28 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
     )))
   }
 
+  func surfaceAccessoryDevice(
+    device: UwbDevice,
+    completion: @escaping (Result<VoidResult, Error>) -> Void
+  ) {
+    completion(.failure(FlutterError(
+      code: "unsupported",
+      message: "Accessory adapter framework is Android-only in v1",
+      details: nil
+    )))
+  }
+
+  func unsurfaceAccessoryDevice(
+    deviceId: String,
+    completion: @escaping (Result<VoidResult, Error>) -> Void
+  ) {
+    completion(.failure(FlutterError(
+      code: "unsupported",
+      message: "Accessory adapter framework is Android-only in v1",
+      details: nil
+    )))
+  }
+
   func getDeviceCapabilities(
     completion: @escaping (Result<DeviceCapabilities, Error>) -> Void
   ) {

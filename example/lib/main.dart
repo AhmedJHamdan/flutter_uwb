@@ -311,18 +311,17 @@ class _HomeState extends State<_Home> {
     if (value) {
       await _uwb.registerAccessoryAdapter(const DemoTagAdapter());
       // Surface a synthetic tile so the user can tap to exercise the
-      // adapter framework without real DemoTag hardware.
-      final device = UwbDevice(
+      // adapter framework without real DemoTag hardware. surfaceAccessoryDevice
+      // pushes the device into the native discovered map so a subsequent
+      // startRanging resolves to the dart-driven strategy.
+      await _uwb.surfaceAccessoryDevice(UwbDevice(
         id: demoTagDeviceId,
         name: 'DemoTag',
         platform: 'accessory:$demoTagVendorTag',
-      );
-      if (!_devicesById.containsKey(device.id)) {
-        setState(() => _devicesById[device.id] = device);
-      }
+      ));
     } else {
+      await _uwb.unsurfaceAccessoryDevice(demoTagDeviceId);
       await _uwb.unregisterAccessoryAdapter(demoTagVendorTag);
-      setState(() => _devicesById.remove(demoTagDeviceId));
     }
     if (mounted) setState(() => _demoAdapterEnabled = value);
   }

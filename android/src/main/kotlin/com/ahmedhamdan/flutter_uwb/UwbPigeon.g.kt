@@ -619,10 +619,15 @@ private object UwbHostApiCodec : StandardMessageCodec() {
       }
       134.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          UwbReadiness.fromList(it)
+          UwbDevice.fromList(it)
         }
       }
       135.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          UwbReadiness.fromList(it)
+        }
+      }
+      136.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           VoidResult.fromList(it)
         }
@@ -656,12 +661,16 @@ private object UwbHostApiCodec : StandardMessageCodec() {
         stream.write(133)
         writeValue(stream, value.toList())
       }
-      is UwbReadiness -> {
+      is UwbDevice -> {
         stream.write(134)
         writeValue(stream, value.toList())
       }
-      is VoidResult -> {
+      is UwbReadiness -> {
         stream.write(135)
+        writeValue(stream, value.toList())
+      }
+      is VoidResult -> {
+        stream.write(136)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -713,6 +722,19 @@ interface UwbHostApi {
    * Dart-driven path; iOS throws `unsupported`.
    */
   fun setRegisteredAdapterTags(vendorTags: List<String>, callback: (Result<VoidResult>) -> Unit)
+  /**
+   * Surface a Dart-supplied accessory device on the native discovered
+   * map so a subsequent [startRanging] resolves to a strategy. Used
+   * by built-in adapters (e.g. the static-pair Qorvo tile) and by
+   * custom adapters that synthesize devices without a real BLE scan
+   * hit. iOS throws `unsupported`.
+   */
+  fun surfaceAccessoryDevice(device: UwbDevice, callback: (Result<VoidResult>) -> Unit)
+  /**
+   * Inverse of [surfaceAccessoryDevice]. Removes the synthetic device
+   * from the native discovered map. iOS throws `unsupported`.
+   */
+  fun unsurfaceAccessoryDevice(deviceId: String, callback: (Result<VoidResult>) -> Unit)
   /**
    * Open the BLE handshake link for [deviceId] and start emitting
    * [UwbFlutterApi.onAccessoryHandshakeEvent] events. The adapter's
@@ -1010,6 +1032,46 @@ interface UwbHostApi {
             val args = message as List<Any?>
             val vendorTagsArg = args[0] as List<String>
             api.setRegisteredAdapterTags(vendorTagsArg) { result: Result<VoidResult> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.surfaceAccessoryDevice", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val deviceArg = args[0] as UwbDevice
+            api.surfaceAccessoryDevice(deviceArg) { result: Result<VoidResult> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
+            }
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.flutter_uwb.UwbHostApi.unsurfaceAccessoryDevice", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val deviceIdArg = args[0] as String
+            api.unsurfaceAccessoryDevice(deviceIdArg) { result: Result<VoidResult> ->
               val error = result.exceptionOrNull()
               if (error != null) {
                 reply.reply(wrapError(error))

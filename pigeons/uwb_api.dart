@@ -379,6 +379,19 @@ abstract class UwbHostApi {
   @async
   VoidResult setRegisteredAdapterTags(List<String> vendorTags);
 
+  /// Surface a Dart-supplied accessory device on the native discovered
+  /// map so a subsequent [startRanging] resolves to a strategy. Used
+  /// by built-in adapters (e.g. the static-pair Qorvo tile) and by
+  /// custom adapters that synthesize devices without a real BLE scan
+  /// hit. iOS throws `unsupported`.
+  @async
+  VoidResult surfaceAccessoryDevice(UwbDevice device);
+
+  /// Inverse of [surfaceAccessoryDevice]. Removes the synthetic device
+  /// from the native discovered map. iOS throws `unsupported`.
+  @async
+  VoidResult unsurfaceAccessoryDevice(String deviceId);
+
   /// Open the BLE handshake link for [deviceId] and start emitting
   /// [UwbFlutterApi.onAccessoryHandshakeEvent] events. The adapter's
   /// `handshake` callback runs on the Dart side and writes back via

@@ -785,6 +785,34 @@ class UwbHostApiImpl(
         callback(Result.success(VoidResult(ok = true)))
     }
 
+    override fun surfaceAccessoryDevice(
+        device: UwbDevice,
+        callback: (Result<VoidResult>) -> Unit,
+    ) {
+        val id = device.id
+        if (id == null || id.isEmpty()) {
+            callback(Result.success(VoidResult(
+                ok = false,
+                error = "surfaceAccessoryDevice: empty device id",
+            )))
+            return
+        }
+        // Add to the dispatcher's discovered map so a subsequent
+        // startRanging(deviceId) resolves to this device. The Dart-side
+        // `_knownDevices` and `deviceFound` stream are populated
+        // separately by the seeder / adapter that called this.
+        discovered[id] = device
+        callback(Result.success(VoidResult(ok = true)))
+    }
+
+    override fun unsurfaceAccessoryDevice(
+        deviceId: String,
+        callback: (Result<VoidResult>) -> Unit,
+    ) {
+        discovered.remove(deviceId)
+        callback(Result.success(VoidResult(ok = true)))
+    }
+
     fun dispose() {
         try { activeStrategy?.stop() } catch (_: Throwable) {}
         activeStrategy = null

@@ -609,6 +609,15 @@ open class BleOob(private val ctx: Context) {
     }
 
     /**
+     * Returns `true` if [deviceId] is a real BLE accessory the scanner
+     * has discovered. Used by [DartDrivenAccessoryStrategy] to detect
+     * synthetic devices (e.g. the static-pair Qorvo tile seeded from
+     * Dart) that should bypass the BLE connect step entirely.
+     */
+    open fun hasAccessoryDevice(deviceId: String): Boolean =
+        accessoryDiscoveryProfiles.containsKey(deviceId)
+
+    /**
      * Open a long-lived GATT *client* connection to a discovered Apple-FiRa
      * accessory (e.g. a Qorvo DWM3001CDK). Mirror of iOS `accessoryConnect`.
      *
