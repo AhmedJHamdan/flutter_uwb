@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_uwb/flutter_uwb.dart';
 import 'package:flutter_uwb/src/accessory/_adapter_registry.dart';
-import 'package:flutter_uwb/src/accessory/_adapter_runner.dart';
 import 'package:flutter_uwb/src/pigeon/uwb.g.dart' as pigeon;
 
 String _hostChan(String method) =>

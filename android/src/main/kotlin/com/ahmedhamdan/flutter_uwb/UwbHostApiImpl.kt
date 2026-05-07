@@ -15,12 +15,11 @@ import com.ahmedhamdan.flutter_uwb.oob.BleOob
 import com.ahmedhamdan.flutter_uwb.oob.OobCapability
 import com.ahmedhamdan.flutter_uwb.oob.TokenStore
 import com.ahmedhamdan.flutter_uwb.strategy.AccessoryControleeStrategy
-import com.ahmedhamdan.flutter_uwb.strategy.AccessoryControllerStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidControleeStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidControleeStrategyRanging
-import com.ahmedhamdan.flutter_uwb.strategy.AndroidControllerStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidPeerStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidStaticPairStrategy
+import com.ahmedhamdan.flutter_uwb.strategy.DartDrivenAccessoryStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.RangingStrategy
 import io.flutter.plugin.common.BinaryMessenger
 import java.nio.ByteBuffer
@@ -131,7 +130,14 @@ class UwbHostApiImpl(
                 }
                 val s = activeStrategy
                 if (s?.deviceId == id) {
-                    s.stop()
+                    if (s is DartDrivenAccessoryStrategy) {
+                        // Route the drop through the strategy so it can
+                        // emit DISCONNECTED to the Dart adapter before
+                        // tearing down the FiRa session.
+                        mainScope.launch { s.handleDisconnected() }
+                    } else {
+                        s.stop()
+                    }
                     activeStrategy = null
                 }
             }
@@ -211,10 +217,10 @@ class UwbHostApiImpl(
                 serviceUuid: UUID,
                 bytes: ByteArray,
             ) {
-                val s = activeStrategy as? AccessoryControllerStrategy ?: run {
+                val s = activeStrategy as? DartDrivenAccessoryStrategy ?: run {
                     Log.w(
                         this@UwbHostApiImpl.tag,
-                        "onAccessoryNotify: no active controller strategy for $id",
+                        "onAccessoryNotify: no active dart-driven strategy for $id",
                     )
                     return
                 }
@@ -225,7 +231,7 @@ class UwbHostApiImpl(
                     )
                     return
                 }
-                mainScope.launch { s.handleAccessoryNotify(bytes) }
+                mainScope.launch { s.handleNotify(bytes) }
             }
         })
     }
@@ -532,26 +538,26 @@ class UwbHostApiImpl(
                 )
             }
             platform == "accessory" || platform.startsWith("accessory:") -> {
-                // Two distinct accessory paths share the `accessory:*`
-                // platform string:
-                // - `accessory:ios` / bare `accessory` — an iPhone host is
-                //   driving us; we run as controlee, replying to its
+                // Three accessory paths share the `accessory:*` platform
+                // string:
+                // - `accessory:ios` / bare `accessory` — an iPhone host
+                //   is driving us; we run as controlee, replying to its
                 //   Initialize / ConfigureAndStart writes.
-                // - `accessory:<registered vendorTag>` — we discovered a
-                //   real Apple-FiRa accessory (e.g. Qorvo) advertising
-                //   one of the registered profile UUIDs, so we play the
-                //   host (controller) and drive its Initialize /
-                //   ConfigureAndStart from our side.
+                // - `accessory:<vendorTag>` (any other tag) — a Dart
+                //   adapter or a built-in fallback owns the BLE-OOB
+                //   protocol; we route to [DartDrivenAccessoryStrategy]
+                //   which relays bytes to/from Dart and opens the FiRa
+                //   session with whatever params the adapter returns.
                 val vendorTag = if (platform.startsWith("accessory:")) {
                     platform.removePrefix("accessory:")
                 } else {
                     null
                 }
-                val isHostMode = vendorTag != null && vendorTag != "ios" &&
-                    registeredProfiles.values.any { it.vendorTag == vendorTag }
-                if (isHostMode) {
-                    AndroidControllerStrategy(
+                val isControleeMode = vendorTag == null || vendorTag == "ios"
+                if (!isControleeMode) {
+                    DartDrivenAccessoryStrategy(
                         initialDeviceId = id,
+                        vendorTag = vendorTag!!,
                         ble = ble,
                         uwbManager = mgr,
                         flutterApi = flutterApi,
@@ -712,13 +718,20 @@ class UwbHostApiImpl(
         }
     }
 
-    // ---------------- Accessory adapter framework (Phase 1 stubs) ----------------
+    // ---------------- Accessory adapter framework ----------------
     //
-    // Phase 2 wires these to a `DartDrivenAccessoryStrategy`. Until then
-    // they record state needed by the dispatcher (`setRegisteredAdapterTags`)
-    // and short-circuit the rest with a clear error so any premature Dart
-    // call surfaces visibly.
+    // Routes Dart-side `AccessoryAdapter` traffic to the active
+    // `DartDrivenAccessoryStrategy`. The Dart side picks the adapter
+    // by vendor tag; the native dispatcher just spins up the strategy
+    // and relays bytes.
 
+    /**
+     * Vendor tags the Dart side has registered an adapter for. Updated
+     * by [setRegisteredAdapterTags]. Currently informational only —
+     * makeStrategy unconditionally routes `accessory:*` (non-ios) to
+     * [DartDrivenAccessoryStrategy], and the Dart `_AdapterRunner`
+     * reports a clear error if no adapter is registered for the tag.
+     */
     private var dartAdapterVendorTags: Set<String> = emptySet()
 
     override fun setRegisteredAdapterTags(
@@ -729,14 +742,22 @@ class UwbHostApiImpl(
         callback(Result.success(VoidResult(ok = true)))
     }
 
+    /** Returns the active [DartDrivenAccessoryStrategy] iff the
+     *  passed [deviceId] matches; otherwise `null`. */
+    private fun activeDartAccessory(deviceId: String): DartDrivenAccessoryStrategy? {
+        val s = activeStrategy as? DartDrivenAccessoryStrategy ?: return null
+        return if (s.deviceId == deviceId) s else null
+    }
+
     override fun beginAccessoryHandshake(
         deviceId: String,
         callback: (Result<VoidResult>) -> Unit,
     ) {
-        callback(Result.success(VoidResult(
-            ok = false,
-            error = "beginAccessoryHandshake: native side not yet wired",
-        )))
+        // Today the strategy's `start()` opens BLE itself when
+        // `startRanging` is called; this method is reserved for a
+        // future "open the BLE link without a session" flow. Reply
+        // ok=true so the Dart side treats the kick-off as a no-op.
+        callback(Result.success(VoidResult(ok = true)))
     }
 
     override fun accessoryProtocolWrite(
@@ -744,10 +765,22 @@ class UwbHostApiImpl(
         bytes: ByteArray,
         callback: (Result<VoidResult>) -> Unit,
     ) {
-        callback(Result.success(VoidResult(
-            ok = false,
-            error = "accessoryProtocolWrite: native side not yet wired",
-        )))
+        val s = activeDartAccessory(deviceId) ?: run {
+            callback(Result.success(VoidResult(
+                ok = false,
+                error = "accessoryProtocolWrite: no active dart-driven strategy for $deviceId",
+            )))
+            return
+        }
+        try {
+            s.accessoryProtocolWrite(bytes)
+            callback(Result.success(VoidResult(ok = true)))
+        } catch (t: Throwable) {
+            callback(Result.success(VoidResult(
+                ok = false,
+                error = t.message ?: "accessoryProtocolWrite failed",
+            )))
+        }
     }
 
     override fun completeAccessoryHandshake(
@@ -755,10 +788,18 @@ class UwbHostApiImpl(
         params: FiraSessionParams,
         callback: (Result<VoidResult>) -> Unit,
     ) {
-        callback(Result.success(VoidResult(
-            ok = false,
-            error = "completeAccessoryHandshake: native side not yet wired",
-        )))
+        val s = activeDartAccessory(deviceId) ?: run {
+            callback(Result.success(VoidResult(
+                ok = false,
+                error = "completeAccessoryHandshake: no active dart-driven strategy for $deviceId",
+            )))
+            return
+        }
+        val err = s.completeAccessoryHandshake(params)
+        callback(Result.success(
+            if (err == null) VoidResult(ok = true)
+            else VoidResult(ok = false, error = err),
+        ))
     }
 
     override fun failAccessoryHandshake(
@@ -766,10 +807,13 @@ class UwbHostApiImpl(
         message: String,
         callback: (Result<VoidResult>) -> Unit,
     ) {
-        callback(Result.success(VoidResult(
-            ok = false,
-            error = "failAccessoryHandshake: native side not yet wired",
-        )))
+        val s = activeDartAccessory(deviceId) ?: run {
+            // No active strategy is fine — just acknowledge.
+            callback(Result.success(VoidResult(ok = true)))
+            return
+        }
+        s.failAccessoryHandshake(message)
+        callback(Result.success(VoidResult(ok = true)))
     }
 
     fun dispose() {

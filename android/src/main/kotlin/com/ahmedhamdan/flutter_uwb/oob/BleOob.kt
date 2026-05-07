@@ -32,7 +32,7 @@ import androidx.core.content.ContextCompat
 import java.security.PrivateKey
 import java.util.UUID
 
-class BleOob(private val ctx: Context) {
+open class BleOob(private val ctx: Context) {
 
     /** A registered Apple-FiRa accessory profile. Mirror of the iOS struct. */
     data class AccessoryProfile(
@@ -618,11 +618,19 @@ class BleOob(private val ctx: Context) {
      * and subsequent inbound bytes flow through
      * [Callback.onAccessoryNotify].
      *
+     * **Persistent-connection contract:** the GATT client opened here
+     * stays alive until [accessoryDisconnect] is called or the peer
+     * drops. The handshake completing does *not* close the link.
+     * `DartDrivenAccessoryStrategy` and the Dart-side
+     * `AccessoryConnection` rely on this so adapter code can keep
+     * reading / writing through the BLE link for the entire ranging
+     * session (e.g. for keep-alive pings or mid-session reconfig).
+     *
      * Failure is reported via [onReady] with `false` plus
      * [Callback.onError]. The host typically tears down the strategy on
      * failure.
      */
-    fun accessoryConnect(
+    open fun accessoryConnect(
         deviceId: String,
         onReady: (Boolean) -> Unit,
     ) {
@@ -648,8 +656,11 @@ class BleOob(private val ctx: Context) {
      * Write bytes to the accessory's `rxUuid` characteristic. Apple-protocol
      * messages are always ≤32 bytes, well under any negotiated MTU; no
      * framing is applied. Mirror of iOS `accessoryWrite`.
+     *
+     * Multiple writes during the same connection are supported — see the
+     * persistent-connection contract on [accessoryConnect].
      */
-    fun accessoryWrite(deviceId: String, bytes: ByteArray) {
+    open fun accessoryWrite(deviceId: String, bytes: ByteArray) {
         val conn = accessoryClients[deviceId] ?: run {
             cb?.onError("accessoryWrite: not ready for $deviceId")
             return
@@ -684,7 +695,7 @@ class BleOob(private val ctx: Context) {
     }
 
     /** Tear down a [accessoryConnect] connection. */
-    fun accessoryDisconnect(deviceId: String) {
+    open fun accessoryDisconnect(deviceId: String) {
         val conn = accessoryClients.remove(deviceId) ?: return
         try { conn.gatt?.disconnect() } catch (_: Throwable) {}
         try { conn.gatt?.close() } catch (_: Throwable) {}
