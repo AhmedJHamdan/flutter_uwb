@@ -46,9 +46,17 @@ class AdapterRunner {
     }
   }
 
+  /// Sentinel tag the framework looks up when no adapter is registered
+  /// for a given accessory's vendor tag. The Apple-NI built-in adapter
+  /// registers under this tag and acts as the fallback for any
+  /// `accessory:<unregistered-tag>` device — preserving zero-code-change
+  /// compatibility for apps that today register only an
+  /// [registerAccessoryProfile] without an accompanying adapter.
+  static const String _appleNiFallbackTag = '__apple_ni_default__';
+
   void _onConnected(String deviceId) {
     final tag = _vendorTagFor(deviceId);
-    final adapter = _registry.lookup(tag);
+    final adapter = _registry.lookup(tag) ?? _registry.lookup(_appleNiFallbackTag);
     if (adapter == null) {
       _api.failAccessoryHandshake(
         deviceId,

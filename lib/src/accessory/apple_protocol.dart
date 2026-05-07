@@ -219,3 +219,89 @@ class AppleAccessoryProtocolException implements Exception {
   @override
   String toString() => 'AppleAccessoryProtocolException: $message';
 }
+
+/// Build the 30-byte `AppleUWBConfigData` blob the host (controller)
+/// sends inside [ConfigureAndStart] (message id 0x0B).
+///
+/// Mirror of the Kotlin `AppleProtocol.buildAppleUWBConfigData`. Layout
+/// matches Apple's NI middleware header (bytes 0..6 verbatim from a
+/// real iPhone↔Qorvo capture) followed by the FiRa session params and
+/// the controller's short address (LE). See
+/// `docs/agents/research/2026-05-03-apple-uwb-config-data-decoded.md`
+/// for the full byte-by-byte annotation.
+///
+/// - [sessionId]: FiRa session id (32-bit, LE).
+/// - [channel]: FiRa channel number (5, 9, ...).
+/// - [preambleIndex]: FiRa preamble code index (BPRF set: 9–12).
+/// - [slotsPerRound]: Slots per ranging round (FiRa default 6).
+/// - [slotDurationRstu]: Slot duration in RSTU (2400 = 2 ms;
+///   3600 = 3 ms).
+/// - [rangingIntervalMs]: Ranging interval in ms.
+/// - [stsIv]: 6-byte Static-STS initialisation vector.
+/// - [controllerShortAddress]: Controller's short address, MSB-first
+///   (matches `androidx.core.uwb.UwbAddress` byte order).
+Uint8List buildAppleUwbConfigData({
+  required int sessionId,
+  required int channel,
+  required int preambleIndex,
+  required int slotsPerRound,
+  required int slotDurationRstu,
+  required int rangingIntervalMs,
+  required Uint8List stsIv,
+  required Uint8List controllerShortAddress,
+}) {
+  if (stsIv.length != 6) {
+    throw ArgumentError('stsIv must be 6 bytes, got ${stsIv.length}');
+  }
+  if (controllerShortAddress.length < 2) {
+    throw ArgumentError(
+      'controllerShortAddress must be at least 2 bytes, got '
+      '${controllerShortAddress.length}',
+    );
+  }
+  final out = Uint8List(30);
+
+  // bytes 0..6 — NI middleware header. Verbatim from iPhone capture.
+  out[0] = 0x01;
+  out[1] = 0x00; // spec major
+  out[2] = 0x01;
+  out[3] = 0x00; // spec minor
+  out[4] = 0x19; // header byte 4
+  out[5] = 0x45; // header byte 5
+  out[6] = 0x55; // header byte 6
+
+  final view = ByteData.sublistView(out);
+  view.setInt32(7, sessionId, Endian.little);
+  out[11] = preambleIndex & 0xFF;
+  out[12] = channel & 0xFF;
+  view.setInt16(13, slotsPerRound & 0xFFFF, Endian.little);
+  view.setInt16(15, slotDurationRstu & 0xFFFF, Endian.little);
+  view.setInt16(17, rangingIntervalMs & 0xFFFF, Endian.little);
+  // byte 19 — FiRa rframe_config = 0x03 (SP3 / Static-STS).
+  out[19] = 0x03;
+
+  out.setRange(20, 26, stsIv);
+
+  // Peer short address LE on the wire. UwbAddress carries it MSB-first;
+  // swap to LE.
+  out[26] = controllerShortAddress[1];
+  out[27] = controllerShortAddress[0];
+
+  // bytes 28..29 — trailer. iPhone captures show 0xC8 0x00.
+  out[28] = 0xC8;
+  out[29] = 0x00;
+
+  return out;
+}
+
+/// Parsed view of the inner short address Apple's
+/// `AccessoryConfigurationData` payload carries.
+///
+/// The 37-byte payload's last 21 bytes are the FiRa middleware
+/// `UWBConfigData`; offsets 17..18 within that inner blob (= 33..34 of
+/// the stripped payload) are the accessory's 2-byte short address (LE).
+/// Returned MSB-first to match `androidx.core.uwb.UwbAddress`.
+Uint8List? parseAccessoryShortAddress(Uint8List payload) {
+  if (payload.length < 35) return null;
+  return Uint8List.fromList([payload[34], payload[33]]);
+}

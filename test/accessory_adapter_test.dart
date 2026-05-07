@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_uwb/flutter_uwb.dart';
 import 'package:flutter_uwb/src/accessory/_adapter_registry.dart';
+import 'package:flutter_uwb/src/accessory/apple_protocol.dart';
+import 'package:flutter_uwb/src/accessory/built_in/apple_ni_accessory_adapter.dart';
+import 'package:flutter_uwb/src/accessory/built_in/static_pair_accessory_adapter.dart';
 import 'package:flutter_uwb/src/pigeon/uwb.g.dart' as pigeon;
 
 String _hostChan(String method) =>
@@ -167,14 +171,23 @@ void main() {
         return hostCodec.encodeMessage(<Object?>[pigeon.VoidResult(ok: true)]);
       });
 
+      // Trigger an initial push so we know the baseline. Built-in
+      // adapters are registered without push at construction; the
+      // first user adapter triggers the first push, which contains
+      // the built-ins plus the new tag.
       await FlutterUwb.instance
           .registerAccessoryAdapter(_RecordingAdapter(vendorTag: 'demo'));
       await Future<void>.delayed(Duration.zero);
-      expect(pushed.last, equals(<String?>['demo']));
+      expect(pushed.last, contains('demo'));
+      // Built-ins are also present.
+      expect(pushed.last, contains('__apple_ni_default__'));
+      expect(pushed.last, contains('qorvo-static'));
 
       await FlutterUwb.instance.unregisterAccessoryAdapter('demo');
       await Future<void>.delayed(Duration.zero);
-      expect(pushed.last, equals(<String?>[]));
+      expect(pushed.last, isNot(contains('demo')));
+      // Built-ins remain after the user adapter is gone.
+      expect(pushed.last, contains('__apple_ni_default__'));
     });
 
     test('connected event triggers handshake on the matching adapter',
@@ -365,6 +378,168 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       expect(custom.seen.isCompleted, isTrue);
       expect(builtIn.seen.isCompleted, isFalse);
+    });
+  });
+
+  group('AppleNiAccessoryAdapter', () {
+    test('handshake writes Initialize then ConfigureAndStart and returns FiraSessionParams',
+        () async {
+      final inbound = StreamController<Uint8List>.broadcast();
+      final writes = <Uint8List>[];
+      final conn = AccessoryConnection(
+        deviceId: 'apple-1',
+        write: (bytes) async {
+          writes.add(bytes);
+          // Schedule the inbound reply via microtask so the adapter's
+          // listener is set up before the bytes arrive on a broadcast
+          // stream (broadcast streams drop events when no one is
+          // listening).
+          if (writes.length == 1) {
+            scheduleMicrotask(() {
+              final payload = Uint8List(37);
+              // payload[33..34] hold the accessory's short address as
+              // a little-endian u16; parseAccessoryShortAddress flips
+              // them to MSB-first. Bytes 0xD8 (low), 0x91 (high)
+              // decode to UwbAddress [0x91, 0xD8].
+              payload[33] = 0xD8;
+              payload[34] = 0x91;
+              inbound.add(Uint8List.fromList([
+                AppleAccessoryMessageId.accessoryConfigurationData.value,
+                ...payload,
+              ]));
+            });
+          } else if (writes.length == 2) {
+            scheduleMicrotask(
+              () => inbound.add(const AccessoryUwbDidStart().encode()),
+            );
+          }
+        },
+        notifyStream: inbound.stream,
+        done: Completer<void>().future,
+      );
+      // Inject a deterministic Random so the test asserts canonical bytes.
+      final adapter = AppleNiAccessoryAdapter(random: Random(42));
+
+      final params = await adapter.handshake(conn);
+      // First write was Initialize (1 byte: 0x0A).
+      expect(writes.first, equals(Uint8List.fromList([0x0A])));
+      // Second write was ConfigureAndStart with 30-byte AppleUWBConfigData
+      // payload prepended by 0x0B.
+      expect(writes[1].length, equals(31));
+      expect(writes[1][0], equals(0x0B));
+
+      // Returned params: roleIsController=true, slotDuration=2 ms,
+      // peer short address parsed from the synthetic frame (offsets
+      // 33..34 of the payload, MSB-first → 0x91, 0xD8).
+      expect(params.roleIsController, isTrue);
+      expect(params.slotDurationMs, equals(2));
+      expect(params.peerShortAddress, equals(Uint8List.fromList([0x91, 0xD8])));
+      // sessionKeyInfo is `vendorId(0x08, 0x07) || stsIv(6B)`.
+      expect(params.sessionKeyInfo[0], equals(0x08));
+      expect(params.sessionKeyInfo[1], equals(0x07));
+      expect(params.sessionKeyInfo.length, equals(8));
+
+      await inbound.close();
+    });
+
+    test('handshake throws when AccessoryConfigurationData payload is short',
+        () async {
+      final inbound = StreamController<Uint8List>.broadcast();
+      final conn = AccessoryConnection(
+        deviceId: 'apple-2',
+        write: (_) async {
+          // Schedule via microtask so the listener has time to attach.
+          scheduleMicrotask(() {
+            inbound.add(Uint8List.fromList([
+              AppleAccessoryMessageId.accessoryConfigurationData.value,
+              ...List.filled(10, 0),
+            ]));
+          });
+        },
+        notifyStream: inbound.stream,
+        done: Completer<void>().future,
+      );
+      final adapter = AppleNiAccessoryAdapter();
+      await expectLater(
+        adapter.handshake(conn),
+        throwsA(isA<StateError>()),
+      );
+      await inbound.close();
+    });
+
+    test('vendorTag is the Apple-NI fallback sentinel', () {
+      expect(
+        AppleNiAccessoryAdapter().vendorTag,
+        equals(appleNiDefaultVendorTag),
+      );
+    });
+  });
+
+  group('StaticPairAccessoryAdapter', () {
+    test('handshake returns the canonical Qorvo CLI params', () async {
+      final adapter = const StaticPairAccessoryAdapter();
+      final inbound = StreamController<Uint8List>.broadcast();
+      final conn = AccessoryConnection(
+        deviceId: staticPairQorvoDeviceId,
+        write: (_) async => fail('static-pair adapter must not write to BLE'),
+        notifyStream: inbound.stream,
+        done: Completer<void>().future,
+      );
+      final params = await adapter.handshake(conn);
+      expect(params.sessionId, equals(42));
+      expect(params.slotDurationMs, equals(2));
+      expect(params.slotsPerRangingRound, equals(6));
+      expect(params.rangingIntervalMs, equals(240));
+      expect(params.peerShortAddress, equals(Uint8List.fromList([0x00, 0x01])));
+      expect(params.roleIsController, isTrue);
+      // sessionKeyInfo mirrors the Qorvo CLI's
+      // -VUPPER=08:07:00:11:22:33:44:55.
+      expect(
+        params.sessionKeyInfo,
+        equals(Uint8List.fromList(
+          [0x08, 0x07, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+        )),
+      );
+      await inbound.close();
+    });
+  });
+
+  group('Static-pair tile seeding', () {
+    test(
+        'registerAccessoryProfile with vendorTag=qorvo surfaces a synthetic tile',
+        () async {
+      mockOk('registerAccessoryProfile');
+      final found = <UwbDevice>[];
+      final sub = FlutterUwb.instance.deviceFound.listen(found.add);
+      await FlutterUwb.instance.registerAccessoryProfile(
+        serviceUuid: '2E938FD0-6A61-11ED-A1EB-0242AC120002',
+        rxUuid: '2E93998A-6A61-11ED-A1EB-0242AC120002',
+        txUuid: '2E939AF2-6A61-11ED-A1EB-0242AC120002',
+        vendorTag: 'qorvo',
+      );
+      // Allow the synchronous deviceFound add to drain.
+      await Future<void>.delayed(Duration.zero);
+      expect(found, hasLength(1));
+      expect(found.first.id, equals(staticPairQorvoDeviceId));
+      expect(found.first.platform, equals('accessory:qorvo-static'));
+      await sub.cancel();
+    });
+
+    test(
+        'registerAccessoryProfile with non-qorvo vendorTag does not surface the tile',
+        () async {
+      mockOk('registerAccessoryProfile');
+      final found = <UwbDevice>[];
+      final sub = FlutterUwb.instance.deviceFound.listen(found.add);
+      await FlutterUwb.instance.registerAccessoryProfile(
+        serviceUuid: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        rxUuid: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        txUuid: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+        vendorTag: 'someone-else',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(found, isEmpty);
+      await sub.cancel();
     });
   });
 }

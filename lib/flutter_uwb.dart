@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'src/accessory/_adapter_registry.dart';
 import 'src/accessory/_adapter_runner.dart';
 import 'src/accessory/accessory_adapter.dart';
+import 'src/accessory/built_in/apple_ni_accessory_adapter.dart';
+import 'src/accessory/built_in/static_pair_accessory_adapter.dart';
 // `accessory_adapter.dart` re-exports `AccessoryHandshakeEvent`,
 // `AccessoryHandshakeEventKind`, and `FiraSessionParams` as typedefs over
 // the Pigeon-generated types. Hide them here to keep a single canonical
@@ -76,6 +78,15 @@ class FlutterUwb {
       api: _api,
       vendorTagFor: _vendorTagForDevice,
     );
+    // Built-in adapters. The Apple-NI fallback registers under the
+    // sentinel tag `__apple_ni_default__`; the runner falls back to it
+    // for any `accessory:<unregistered-tag>` device. The static-pair
+    // adapter registers under `qorvo-static` and pairs with a
+    // synthetic device tile seeded by [_seedStaticPairTileIfReady].
+    // Custom adapters registered later via [registerAccessoryAdapter]
+    // shadow the built-ins (registry semantics).
+    _adapterRegistry.registerWithoutPush(AppleNiAccessoryAdapter());
+    _adapterRegistry.registerWithoutPush(const StaticPairAccessoryAdapter());
     UwbFlutterApi.setup(_FlutterApiHandler(this));
   }
 
@@ -192,17 +203,40 @@ class FlutterUwb {
     required String rxUuid,
     required String txUuid,
     String? vendorTag,
-  }) async =>
-      _check(
-        await _api.registerAccessoryProfile(
-          AccessoryProfile(
-            serviceUuid: serviceUuid,
-            rxUuid: rxUuid,
-            txUuid: txUuid,
-            vendorTag: vendorTag,
-          ),
+  }) async {
+    _check(
+      await _api.registerAccessoryProfile(
+        AccessoryProfile(
+          serviceUuid: serviceUuid,
+          rxUuid: rxUuid,
+          txUuid: txUuid,
+          vendorTag: vendorTag,
         ),
-      );
+      ),
+    );
+    _seedStaticPairTileIfReady(vendorTag);
+  }
+
+  /// Surface a synthetic "Qorvo (static demo)" tile when a Qorvo
+  /// accessory profile is registered AND the [StaticPairAccessoryAdapter]
+  /// is available in the registry. The tile is hidden when the host
+  /// app doesn't register a Qorvo profile so other accessories don't
+  /// see a confusing entry. Tapping the tile routes through the
+  /// adapter framework to the static-pair adapter, which returns
+  /// hardcoded FiRa params for bench-testing against a Qorvo
+  /// DWM3001CDK running CLI firmware.
+  void _seedStaticPairTileIfReady(String? profileVendorTag) {
+    if (profileVendorTag != 'qorvo') return;
+    if (_adapterRegistry.lookup(staticPairQorvoVendorTag) == null) return;
+    if (_knownDevices.containsKey(staticPairQorvoDeviceId)) return;
+    final device = UwbDevice(
+      id: staticPairQorvoDeviceId,
+      name: staticPairQorvoDeviceName,
+      platform: 'accessory:$staticPairQorvoVendorTag',
+    );
+    _knownDevices[device.id] = device;
+    if (!_deviceFound.isClosed) _deviceFound.add(device);
+  }
 
   /// Remove a previously-registered accessory profile.
   ///

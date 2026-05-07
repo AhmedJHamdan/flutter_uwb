@@ -18,7 +18,6 @@ import com.ahmedhamdan.flutter_uwb.strategy.AccessoryControleeStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidControleeStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidControleeStrategyRanging
 import com.ahmedhamdan.flutter_uwb.strategy.AndroidPeerStrategy
-import com.ahmedhamdan.flutter_uwb.strategy.AndroidStaticPairStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.DartDrivenAccessoryStrategy
 import com.ahmedhamdan.flutter_uwb.strategy.RangingStrategy
 import io.flutter.plugin.common.BinaryMessenger
@@ -240,32 +239,10 @@ class UwbHostApiImpl(
     override fun startDiscovery(localName: String): VoidResult = try {
         ble.setAccessoryProfiles(bleAccessoryProfiles())
         ble.start(localName)
-        seedStaticPairDemoIfReady()
         VoidResult(ok = true)
     } catch (t: Throwable) {
         Log.e(tag, "startDiscovery", t)
         VoidResult(ok = false, error = t.message ?: "startDiscovery error")
-    }
-
-    /**
-     * If the host registered the Qorvo accessory profile, also surface
-     * a synthetic "Qorvo (static demo)" tile so the example app can
-     * exercise the no-BLE [AndroidStaticPairStrategy] against a Qorvo
-     * board running CLI firmware. Hidden when no Qorvo profile is
-     * registered, so other accessories don't see a confusing tile.
-     */
-    private fun seedStaticPairDemoIfReady() {
-        val hasQorvo = registeredProfiles.values.any { it.vendorTag == "qorvo" }
-        if (!hasQorvo) return
-        val id = AndroidStaticPairStrategy.DEVICE_ID
-        if (discovered.containsKey(id)) return
-        val device = UwbDevice(
-            id = id,
-            name = AndroidStaticPairStrategy.DEVICE_NAME,
-            platform = AndroidStaticPairStrategy.DEVICE_PLATFORM,
-        )
-        discovered[id] = device
-        mainScope.launch { flutterApi.onDeviceFound(device) {} }
     }
 
     override fun stopDiscovery(): VoidResult = try {
@@ -513,14 +490,6 @@ class UwbHostApiImpl(
         val id = device.id ?: return null
         val platform = device.platform ?: "android"
         return when {
-            platform == AndroidStaticPairStrategy.DEVICE_PLATFORM -> {
-                AndroidStaticPairStrategy(
-                    deviceId = id,
-                    uwbManager = mgr,
-                    flutterApi = flutterApi,
-                    rangingScope = mainScope,
-                )
-            }
             platform == "android" || platform == "ios" -> {
                 val token = TokenStore.getPeer(id)
                 if (token == null || token.isEmpty()) {
