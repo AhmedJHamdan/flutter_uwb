@@ -211,13 +211,7 @@ If permissions are granted and you still see nothing, check that Bluetooth is ac
 <details>
 <summary><b><code>UwbErrorCode.regionalRestriction</code> on first ranging call</b></summary>
 
-UWB is disabled by the OS in a small number of jurisdictions (Russia, Indonesia, parts of South America). The hardware is present but the radio is locked. There's no programmatic recovery — surface a region-restriction notice to the user.
-</details>
-
-<details>
-<summary><b><code>isUwbAvailable()</code> returns <code>false</code> on a Pixel 6/7/8</b></summary>
-
-If the device has a UWB radio and isn't region-restricted, the most common cause is a stale `UwbManager` state after the screen-lock cycle. Toggle airplane mode once and retry. If it still returns false, confirm the build is on Android 14+ — older Android versions report UWB inconsistently.
+UWB is regulated and the OS disables ranging in some jurisdictions even on hardware that ships with the radio. There's no programmatic recovery — surface a region-restriction notice to the user.
 </details>
 
 <details>
