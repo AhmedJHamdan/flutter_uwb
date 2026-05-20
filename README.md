@@ -12,13 +12,15 @@
 
 ## <img src="assets/brand/flutter_uwb_pulse.svg" width="20" align="left"/> Features
 
-- **Distance + direction** — centimeter-level distance and azimuth/elevation when the hardware supports it.
-- **Discovery + pairing built in** — peers find each other over BLE / MultipeerConnectivity, and the plugin runs the UWB token exchange end-to-end. No QR codes, no hand-rolled signalling.
-- **One Dart API, two platforms** — same surface for Android (`androidx.core.uwb`) and iOS (`NearbyInteraction`).
-- **Apple FiRa accessories** — talk to Qorvo, NXP, and other certified UWB tags from iOS out of the box.
-- **End-to-end encrypted** — every Android↔Android session uses a fresh per-pair key; iOS rides Apple's protected discovery channels.
-- **Production-ready** — readiness checks tell you what's supported and which permissions to ask for; typed error codes tell you exactly why something failed, so apps can recover gracefully instead of showing platform stack traces.
-- **Streams everywhere** — discovery, ranging samples, errors, and lifecycle events as `Stream`s you can plug into any state-management solution.
+- **Distance + direction** — centimeter-level distance on every UWB device, plus azimuth/elevation where the hardware supports it.
+- **One Dart API, two platforms** — the same streams and method names on Android (`androidx.core.uwb`) and iOS (`NearbyInteraction`).
+- **Discovery + pairing built in** — peers find each other over BLE / MultipeerConnectivity and the plugin runs the full UWB token exchange end-to-end. No QR codes, no hand-rolled signalling.
+- **Accept or decline incoming requests** — a peer's pairing request surfaces on the `incomingRequests` stream before UWB starts, so your app decides whether to pair. Works on both platforms.
+- **Apple FiRa accessories (iOS)** — range against Qorvo, NXP, and any certified FiRa tag via the Apple NI Accessory Protocol; register a vendor's BLE service UUIDs with one call.
+- **Encrypted Android↔Android** — per-session X25519 ECDH, an HKDF-SHA256 session key, and an HMAC-authenticated token exchange over BLE. iOS rides Apple's protected discovery channels.
+- **Camera-assisted ranging (iOS)** — opt into ARKit-backed directional ranging on supported hardware.
+- **Lifecycle-safe sessions** — NI sessions tear down automatically on background/terminate; no ARKit stalls, no crashes on resume.
+- **Production-ready** — `checkReadiness()` and `getDeviceCapabilities()` surface support and permissions before ranging, typed `UwbErrorCode`s explain failures, and everything — discovery, samples, errors, lifecycle — arrives as `Stream`s.
 
 ## What ranges against what
 
