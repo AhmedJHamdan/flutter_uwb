@@ -204,6 +204,46 @@ void main() {
       }
     });
 
+    test(
+        'exchangeTokens maps host PlatformException to '
+        'UwbException(transportError)', () async {
+      const codec = pigeon.UwbHostApi.pigeonChannelCodec;
+      // A reply list of length > 1 is Pigeon's error envelope
+      // [code, message, details]; the generated client throws
+      // PlatformException, which the facade must remap to UwbException.
+      binaryMessenger.setMockMessageHandler(_hostChan('exchangeTokens'),
+          (ByteData? message) async {
+        return codec
+            .encodeMessage(<Object?>['transport', 'peer disconnected', null]);
+      });
+      try {
+        await FlutterUwb.instance
+            .exchangeTokens('peer', Uint8List.fromList([1]));
+        fail('expected UwbException');
+      } on UwbException catch (e) {
+        expect(e.code, UwbErrorCode.transportError);
+        expect(e.message, 'peer disconnected');
+      }
+    });
+
+    test(
+        'getLocalToken maps host PlatformException to '
+        'UwbException(sessionInitFailed)', () async {
+      const codec = pigeon.UwbHostApi.pigeonChannelCodec;
+      binaryMessenger.setMockMessageHandler(_hostChan('getLocalToken'),
+          (ByteData? message) async {
+        return codec
+            .encodeMessage(<Object?>['token', 'token unavailable', null]);
+      });
+      try {
+        await FlutterUwb.instance.getLocalToken(UwbRole.controller);
+        fail('expected UwbException');
+      } on UwbException catch (e) {
+        expect(e.code, UwbErrorCode.sessionInitFailed);
+        expect(e.message, 'token unavailable');
+      }
+    });
+
     test('UwbException toString omits code section when null', () {
       const e = UwbException('boom');
       expect(e.code, isNull);

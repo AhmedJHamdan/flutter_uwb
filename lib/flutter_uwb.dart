@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show PlatformException;
+
 import 'src/pigeon/uwb.g.dart';
 
 export 'src/log.dart' show UwbLog, UwbLogLevel;
@@ -112,6 +114,21 @@ class FlutterUwb {
     if (!r.ok) throw UwbException(r.error ?? 'unknown error');
   }
 
+  /// Runs a value-returning Pigeon call, translating the raw
+  /// [PlatformException] that the generated client throws on a host-side
+  /// failure into a [UwbException] with [code], so callers can rely on the
+  /// documented `UwbException` surface.
+  Future<T> _mapPlatformErrors<T>(
+    Future<T> Function() call,
+    UwbErrorCode code,
+  ) async {
+    try {
+      return await call();
+    } on PlatformException catch (e) {
+      throw UwbException(e.message ?? e.code, code: code);
+    }
+  }
+
   // -------- Discovery / OOB --------
 
   /// Start BLE OOB discovery, advertising [localName] to nearby peers.
@@ -183,9 +200,9 @@ class FlutterUwb {
   /// Throws [UwbException] if the platform returns an empty token or if
   /// the exchange fails.
   Future<Uint8List> exchangeTokens(String deviceId, Uint8List myToken) async {
-    final out = await _api.exchangeTokens(
-      deviceId,
-      TokenPayload(bytes: myToken),
+    final out = await _mapPlatformErrors(
+      () => _api.exchangeTokens(deviceId, TokenPayload(bytes: myToken)),
+      UwbErrorCode.transportError,
     );
     if (out.bytes.isEmpty) {
       throw const UwbException(
@@ -209,7 +226,10 @@ class FlutterUwb {
   ///
   /// Throws [UwbException] if the token is unavailable.
   Future<Uint8List> getLocalToken(UwbRole role) async {
-    final t = await _api.getLocalToken(role);
+    final t = await _mapPlatformErrors(
+      () => _api.getLocalToken(role),
+      UwbErrorCode.sessionInitFailed,
+    );
     if (t.bytes.isEmpty) {
       throw const UwbException(
         'getLocalToken: platform returned empty token',

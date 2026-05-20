@@ -17,6 +17,10 @@
   CoreBluetooth and see `.unknown`. `BleOob` now instantiates its central
   manager eagerly and `checkReadiness` defers its reply until the radio
   state has resolved.
+- Pairing failures (`exchangeTokens` / `getLocalToken` / `pairWith`) now throw
+  `UwbException` instead of leaking a raw `PlatformException`, so app-level
+  `on UwbException` handlers catch a stalled or refused iOS↔iOS pair instead of
+  the failure vanishing.
 
 ### Changed
 

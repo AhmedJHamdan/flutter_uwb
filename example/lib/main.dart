@@ -64,6 +64,7 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
   final Map<String, UwbDevice> _devicesById = {};
   RangingSample? _lastSample;
   String? _activeRangingId;
+  String? _pairingId;
   int? _lastHapticBin;
   String? _lastVerb;
   DateTime? _directionLostSince;
@@ -178,6 +179,7 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
 
   Future<void> _handleIncomingRequest(IncomingRequest req) async {
     final id = req.device.id;
+    if (mounted) setState(() => _pairingId = id);
     try {
       final myToken = await _uwb.getLocalToken(UwbRole.controlee);
       await _uwb.acceptRequest(id, myToken);
@@ -188,6 +190,8 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Auto-accept failed: ${e.message}')),
       );
+    } finally {
+      if (mounted) setState(() => _pairingId = null);
     }
   }
 
@@ -340,6 +344,7 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
 
   Future<void> _pairAndRange(UwbDevice device) async {
     final id = device.id;
+    if (mounted) setState(() => _pairingId = id);
     // Only one ranging session can be active at a time on iOS — a second
     // startRanging while another is live fails with -5887 (sessionFailed)
     // because the AR/camera resources are already claimed. Tear the
@@ -373,6 +378,8 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      if (mounted) setState(() => _pairingId = null);
     }
   }
 
@@ -426,9 +433,11 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
   }
 
   String get _signalText {
-    if (!_scanning && _activeRangingId == null) return 'idle';
+    if (!_scanning && _activeRangingId == null && _pairingId == null) {
+      return 'idle';
+    }
     if (_activeRangingId != null && _lastSample != null) return 'live';
-    if (_activeRangingId != null) return 'pairing';
+    if (_activeRangingId != null || _pairingId != null) return 'pairing';
     return 'scan';
   }
 
@@ -519,6 +528,12 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
               text: 'UWB hardware not available on this device',
               color: Brand.muted,
             )
+          else if (_pairingId != null && _activeRangingId == null)
+            _StatusBanner(
+              text:
+                  'Pairing with ${_devicesById[_pairingId]?.name ?? _pairingId}…',
+              color: Brand.primary,
+            )
           else if (_uwbAvailable == true &&
               _activeRangingId == null &&
               !_scanning)
@@ -579,6 +594,7 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
               _PeerTile(
                 device: d,
                 isActive: _activeRangingId == d.id,
+                isPairing: _pairingId == d.id && _activeRangingId != d.id,
                 busyElsewhere:
                     _activeRangingId != null && _activeRangingId != d.id,
                 onPair: () => _pairAndRange(d),
@@ -715,12 +731,14 @@ class _PeerTile extends StatelessWidget {
   const _PeerTile({
     required this.device,
     required this.isActive,
+    required this.isPairing,
     required this.busyElsewhere,
     required this.onPair,
   });
 
   final UwbDevice device;
   final bool isActive;
+  final bool isPairing;
   final bool busyElsewhere;
   final VoidCallback onPair;
 
@@ -772,7 +790,16 @@ class _PeerTile extends StatelessWidget {
                 ],
               ),
             ),
-            if (!isActive)
+            if (isPairing)
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Brand.primary,
+                ),
+              )
+            else if (!isActive)
               TextButton(
                 onPressed: busyElsewhere ? null : onPair,
                 style: TextButton.styleFrom(
