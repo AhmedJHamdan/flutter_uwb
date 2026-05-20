@@ -45,6 +45,12 @@ that actually deliver distance samples on real hardware:
   `pairWith` flow. The 0.4.0 changelog announced this as fixed; it was
   not. The plugin now forwards `onIncomingRequest` with the peer token on
   both platforms, matching the iOS behaviour.
+- **iOS `checkReadiness` no longer reports a spurious
+  `bluetoothEnabled: false` on cold start.** `CBCentralManager` reports
+  the radio state asynchronously, so the first readiness call could race
+  CoreBluetooth and see `.unknown`. `BleOob` now instantiates its central
+  manager eagerly and `checkReadiness` defers its reply until the radio
+  state has resolved.
 
 ## 0.4.1
 
