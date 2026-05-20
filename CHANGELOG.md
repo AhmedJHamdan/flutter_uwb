@@ -36,6 +36,16 @@ that actually deliver distance samples on real hardware:
   `4F1A9A1C-…` UUID. If you saw the iPhone advertising that UUID and
   relied on it, it's gone.
 
+### Fixed
+
+- **`incomingRequests` now actually fires on Android.** The Android OOB
+  handshake captured the peer's token but never forwarded it to Dart, so
+  the responder's `incomingRequests` stream stayed silent and
+  Android↔Android pairing could not complete through the documented
+  `pairWith` flow. The 0.4.0 changelog announced this as fixed; it was
+  not. The plugin now forwards `onIncomingRequest` with the peer token on
+  both platforms, matching the iOS behaviour.
+
 ## 0.4.1
 
 - Shrink the brand shields-style badge SVG to 137×20 (was 220×32) so

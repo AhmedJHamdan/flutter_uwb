@@ -50,7 +50,13 @@ class BleOob(private val ctx: Context) {
          * service-data (pre-0.4.0 peers).
          */
         fun onDeviceFound(id: String, name: String, capability: Byte)
-        fun onIncomingRequest(id: String, name: String)
+
+        /**
+         * @param peerToken the remote peer's UWB token, MAC-verified and
+         * unwrapped from the OOB envelope. Ready to feed into a ranging
+         * session once the host app accepts the request.
+         */
+        fun onIncomingRequest(id: String, name: String, peerToken: ByteArray)
         fun onConnected(id: String, name: String)
         fun onDisconnected(id: String, name: String)
         fun onError(msg: String)
@@ -460,7 +466,7 @@ class BleOob(private val ctx: Context) {
                 }
                 TokenStore.putPeer(device.address, token, keys.sessionKey)
                 pendingCentrals[device.address] = device
-                cb?.onIncomingRequest(device.address, deviceNameSafe(device))
+                cb?.onIncomingRequest(device.address, deviceNameSafe(device), token)
             }
             else -> cb?.onError("unknown handshake message type 0x${type.toInt() and 0xFF}")
         }
