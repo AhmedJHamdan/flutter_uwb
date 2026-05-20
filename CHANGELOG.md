@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.1
+
+### Fixed
+
+- **`incomingRequests` now actually fires on Android.** The Android OOB
+  handshake captured the peer's token but never forwarded it to Dart, so
+  the responder's `incomingRequests` stream stayed silent and
+  Android↔Android pairing could not complete through the documented
+  `pairWith` flow. The 0.4.0 changelog announced this as fixed; it was
+  not. The plugin now forwards `onIncomingRequest` with the peer token on
+  both platforms, matching the iOS behaviour.
+- **iOS `checkReadiness` no longer reports a spurious
+  `bluetoothEnabled: false` on cold start.** `CBCentralManager` reports
+  the radio state asynchronously, so the first readiness call could race
+  CoreBluetooth and see `.unknown`. `BleOob` now instantiates its central
+  manager eagerly and `checkReadiness` defers its reply until the radio
+  state has resolved.
+
+### Changed
+
+- Trimmed the Android `OobCapability` to the surface 1.0.0 actually uses,
+  removing the dead `parse()`, `UNKNOWN_DEFAULT`, and `toAndroidPlatform()`
+  members left over from the cross-OS removal. Internal only — no public
+  API change.
+
 ## 1.0.0
 
 First stable release. The plugin now ships only the routing paths
@@ -23,8 +48,11 @@ that actually deliver distance samples on real hardware:
   No timeline for re-adding without chip-vendor cooperation.
 - `registerAccessoryProfile` is now iOS-only. Calling it on Android
   returns a structured error rather than silently no-op'ing.
-- `OobCapability` (Dart, Kotlin, Swift) and `OobHandshake.swift` —
-  the cross-OS plumbing is unused after the routing change.
+- `OobHandshake.swift` and the Dart and Swift `OobCapability` types —
+  the cross-OS plumbing is unused after the routing change. Android
+  retains its `OobCapability` as the BLE service-data marker that
+  identifies Android peers and filters out non-Android advertisers on
+  the shared service UUID.
 
 ### Notes for upgraders from 0.4.x
 
@@ -35,22 +63,6 @@ that actually deliver distance samples on real hardware:
 - iOS apps no longer publish a BLE GATT service on the symmetric
   `4F1A9A1C-…` UUID. If you saw the iPhone advertising that UUID and
   relied on it, it's gone.
-
-### Fixed
-
-- **`incomingRequests` now actually fires on Android.** The Android OOB
-  handshake captured the peer's token but never forwarded it to Dart, so
-  the responder's `incomingRequests` stream stayed silent and
-  Android↔Android pairing could not complete through the documented
-  `pairWith` flow. The 0.4.0 changelog announced this as fixed; it was
-  not. The plugin now forwards `onIncomingRequest` with the peer token on
-  both platforms, matching the iOS behaviour.
-- **iOS `checkReadiness` no longer reports a spurious
-  `bluetoothEnabled: false` on cold start.** `CBCentralManager` reports
-  the radio state asynchronously, so the first readiness call could race
-  CoreBluetooth and see `.unknown`. `BleOob` now instantiates its central
-  manager eagerly and `checkReadiness` defers its reply until the radio
-  state has resolved.
 
 ## 0.4.1
 

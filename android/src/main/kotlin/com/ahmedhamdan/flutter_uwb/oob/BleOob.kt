@@ -45,9 +45,10 @@ class BleOob(private val ctx: Context) {
 
     interface Callback {
         /**
-         * @param capability remote peer's [OobCapability] byte. Defaults
-         * to [OobCapability.UNKNOWN_DEFAULT] when the advertisement omits
-         * service-data (pre-0.4.0 peers).
+         * @param capability remote peer's [OobCapability] byte. An
+         * advertisement that omits service-data is reported as
+         * [OobCapability.IOS_PEER] and dropped by the host, since
+         * flutter_uwb 1.0.0 ranges Android↔Android only.
          */
         fun onDeviceFound(id: String, name: String, capability: Byte)
 
