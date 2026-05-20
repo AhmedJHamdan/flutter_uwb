@@ -250,11 +250,14 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() {
         _capabilities = caps;
-        // Default the precision toggles ON when the hardware supports them
-        // — matches the "premium experience by default" expectation. The
-        // user can flip them off in Settings before starting a session.
+        // Camera assist and extended distance are mutually exclusive on
+        // `NINearbyPeerConfiguration` — extended distance trades AoA for
+        // range, camera assist supplies AoA via ARKit. Default to camera
+        // assist when supported (precision-find UX expects direction);
+        // otherwise fall back to extended distance for longer range.
         _cameraAssist = caps.supportsCameraAssist;
-        _extendedDistance = caps.supportsExtendedDistance;
+        _extendedDistance =
+            caps.supportsExtendedDistance && !caps.supportsCameraAssist;
       });
     } on UwbException catch (e) {
       if (!mounted) return;
@@ -372,11 +375,17 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
   }
 
   void _setCameraAssist(bool value) {
-    setState(() => _cameraAssist = value);
+    setState(() {
+      _cameraAssist = value;
+      if (value) _extendedDistance = false;
+    });
   }
 
   void _setExtendedDistance(bool value) {
-    setState(() => _extendedDistance = value);
+    setState(() {
+      _extendedDistance = value;
+      if (value) _cameraAssist = false;
+    });
   }
 
   String get _distanceText {
