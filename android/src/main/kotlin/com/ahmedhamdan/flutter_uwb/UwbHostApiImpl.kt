@@ -86,8 +86,7 @@ class UwbHostApiImpl(
                 // shown as "discoverable" only to fail at startRanging.
                 if (capability == OobCapability.IOS_PEER) return
                 val isNew = !discovered.containsKey(id)
-                val platform = OobCapability.toAndroidPlatform(capability)
-                val device = UwbDevice(id = id, name = name, platform = platform)
+                val device = UwbDevice(id = id, name = name, platform = "android")
                 discovered[id] = device
                 if (isNew) flutterApi.onDeviceFound(device) {}
             }

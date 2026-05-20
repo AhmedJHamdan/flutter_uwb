@@ -5,26 +5,22 @@ package com.ahmedhamdan.flutter_uwb.strategy
  *
  * Mirror of the iOS-side `RangingStrategy.swift`: each implementation
  * owns its own Jetpack-UWB session scope, runs the appropriate FiRa
- * configuration for the peer kind, and emits samples / errors through
- * the host's `UwbFlutterApi`.
+ * configuration for the peer, and emits samples / errors through the
+ * host's `UwbFlutterApi`.
  *
  * Selection lives in `UwbHostApiImpl.startRanging` and keys off
- * `UwbDevice.platform`:
- * - "android" / "ios"   -> [AndroidPeerStrategy]
- * - "accessory"         -> [AndroidControleeStrategy]
- * - "accessory:<vendor>"-> currently routes to [AndroidControleeStrategy]
- *   too (the built-in Apple-protocol controlee role); a vendor adapter
- *   is a follow-up.
+ * `UwbDevice.platform`. flutter_uwb 1.0.0 ranges Android↔Android only,
+ * so the sole routed kind is another Android phone
+ * ("android" -> [AndroidPeerStrategy]); any other platform is rejected
+ * before a strategy is created.
  */
 interface RangingStrategy {
     /** Stable peer id used for sample routing on the Dart side. */
     val deviceId: String
 
     /**
-     * Begin ranging. The strategy is responsible for any platform-side
-     * handshake (peer mode: build [androidx.core.uwb.RangingParameters]
-     * and run; controlee mode: drive the multi-message Apple-protocol
-     * exchange before starting the session).
+     * Begin ranging. The strategy builds its
+     * [androidx.core.uwb.RangingParameters] and starts the session.
      *
      * Suspend-friendly because Jetpack UWB scope acquisition is itself
      * a `suspend` call.

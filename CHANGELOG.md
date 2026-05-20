@@ -23,8 +23,11 @@ that actually deliver distance samples on real hardware:
   No timeline for re-adding without chip-vendor cooperation.
 - `registerAccessoryProfile` is now iOS-only. Calling it on Android
   returns a structured error rather than silently no-op'ing.
-- `OobCapability` (Dart, Kotlin, Swift) and `OobHandshake.swift` —
-  the cross-OS plumbing is unused after the routing change.
+- `OobHandshake.swift` and the Dart and Swift `OobCapability` types —
+  the cross-OS plumbing is unused after the routing change. Android
+  keeps a trimmed `OobCapability` as the BLE service-data marker that
+  identifies Android peers and filters out non-Android advertisers on
+  the shared service UUID.
 
 ### Notes for upgraders from 0.4.x
 
