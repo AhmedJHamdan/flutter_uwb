@@ -68,6 +68,9 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
   String? _lastVerb;
   DateTime? _directionLostSince;
   Timer? _directionLostTimer;
+  Timer? _scanTimeoutTimer;
+  bool _scanNoPeers = false;
+  static const _scanGrace = Duration(seconds: 8);
   int _currentTab = 0;
 
   StreamSubscription<UwbDevice>? _deviceFoundSub;
@@ -95,7 +98,11 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
     }
     _deviceFoundSub = _uwb.deviceFound.listen((d) {
       if (!mounted) return;
-      setState(() => _devicesById[d.id] = d);
+      _scanTimeoutTimer?.cancel();
+      setState(() {
+        _devicesById[d.id] = d;
+        _scanNoPeers = false;
+      });
     });
     _deviceLostSub = _uwb.deviceLost.listen((id) {
       if (!mounted) return;
@@ -194,6 +201,7 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
     _errorsSub?.cancel();
     _incomingSub?.cancel();
     _directionLostTimer?.cancel();
+    _scanTimeoutTimer?.cancel();
     if (_activeRangingId != null) _uwb.stopRanging();
     if (_scanning) _uwb.stopDiscovery();
     super.dispose();
@@ -296,9 +304,11 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
       } on UwbException catch (e) {
         if (mounted) setState(() => _error = e.message);
       }
+      _scanTimeoutTimer?.cancel();
       if (mounted) {
         setState(() {
           _scanning = false;
+          _scanNoPeers = false;
           _devicesById.clear();
         });
       }
@@ -312,7 +322,15 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
       if (mounted) {
         setState(() {
           _scanning = true;
+          _scanNoPeers = false;
           _error = null;
+        });
+        _scanTimeoutTimer?.cancel();
+        _scanTimeoutTimer = Timer(_scanGrace, () {
+          if (!mounted) return;
+          if (_scanning && _activeRangingId == null && _devicesById.isEmpty) {
+            setState(() => _scanNoPeers = true);
+          }
         });
       }
     } on UwbException catch (e) {
@@ -505,6 +523,16 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
               _activeRangingId == null &&
               !_scanning)
             _StatusBanner(text: 'Tap Start Ranging to discover peers')
+          else if (_scanning && _activeRangingId == null && _scanNoPeers)
+            _StatusBanner(
+              text: Platform.isIOS
+                  ? 'No peers found yet. On iPhone, allow Local Network access '
+                        '(Settings → this app → Local Network), and check the '
+                        'other phone is scanning and nearby.'
+                  : 'No peers found yet. Check the other phone is scanning '
+                        'and nearby.',
+              color: Brand.warm,
+            )
           else if (_scanning && _activeRangingId == null)
             _StatusBanner(text: 'Scanning for peers…'),
           const SizedBox(height: 12),

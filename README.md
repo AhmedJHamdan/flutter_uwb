@@ -211,6 +211,12 @@ If permissions are granted and you still see nothing, check that Bluetooth is ac
 </details>
 
 <details>
+<summary><b><code>startDiscovery</code> succeeds on iOS but no peers appear</b></summary>
+
+iOS↔iOS pairing runs over MultipeerConnectivity, which needs the **Local Network** permission. iOS prompts for it the first time you call `startDiscovery`; if it was dismissed or denied, discovery silently returns no peers and raises no error. Re-enable it in Settings → your app → Local Network. Also confirm `NSLocalNetworkUsageDescription` and the `NSBonjourServices` entries (`_flutteruwb-uwb._tcp` / `_udp`) are present and match exactly — see [Permissions](#permissions). Note iOS gives no API to query this state, so `checkReadiness()` cannot report it.
+</details>
+
+<details>
 <summary><b><code>UwbErrorCode.regionalRestriction</code> on first ranging call</b></summary>
 
 UWB is regulated and the OS disables ranging in some jurisdictions even on hardware that ships with the radio. There's no programmatic recovery — surface a region-restriction notice to the user.
