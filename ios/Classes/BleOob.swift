@@ -66,12 +66,30 @@ final class BleOob: NSObject {
   /// `true` when the system Bluetooth radio is currently `.poweredOn`.
   /// Read by `UwbHostApiImpl.checkReadiness` to surface a "turn on
   /// Bluetooth" hint to the host app.
-  ///
-  /// Returns `false` when the central manager has not been instantiated
-  /// yet — instantiating it here would trigger the OS Bluetooth-usage
-  /// prompt, which we don't want to do on a passive readiness check.
   var isPoweredOn: Bool {
     return central?.state == .poweredOn
+  }
+
+  /// `true` once `centralManagerDidUpdateState` has fired at least once.
+  /// Used by `UwbHostApiImpl.checkReadiness` to defer the first readiness
+  /// reply until CoreBluetooth has reported the radio's actual state, so
+  /// the host app doesn't get a spurious `bluetoothEnabled: false` on
+  /// cold start.
+  var hasResolvedState: Bool {
+    guard let s = central?.state else { return false }
+    return s != .unknown
+  }
+
+  private var pendingStateCallbacks: [() -> Void] = []
+
+  /// Invoke `block` once `central?.state` has resolved to a non-`.unknown`
+  /// value. Fires immediately if state is already known.
+  func onceStateResolved(_ block: @escaping () -> Void) {
+    if hasResolvedState {
+      block()
+    } else {
+      pendingStateCallbacks.append(block)
+    }
   }
 
   /// Configured accessory profiles. Forms the scan filter.
@@ -101,6 +119,10 @@ final class BleOob: NSObject {
 
   override init() {
     super.init()
+    // Eager-init so `isPoweredOn` reflects real radio state by the time
+    // `checkReadiness` runs. Without this the first readiness check races
+    // CoreBluetooth and reports a spurious `bluetoothEnabled: false`.
+    central = CBCentralManager(delegate: self, queue: .main)
   }
 
   /// Start scanning for registered accessory profiles. Calling `start`
@@ -114,22 +136,22 @@ final class BleOob: NSObject {
     started = true
     wantsScan = !accessoryProfiles.isEmpty
 
-    if central == nil {
-      central = CBCentralManager(delegate: self, queue: .main)
-    } else if let c = central, c.state == .poweredOn, c.isScanning {
+    if let c = central, c.state == .poweredOn, c.isScanning {
       // Restart scan to pick up the new UUID list.
       c.stopScan()
-      attemptScanIfReady()
-    } else {
-      attemptScanIfReady()
     }
+    attemptScanIfReady()
   }
 
   /// Update the configured accessory profile list. If a scan is
   /// currently active, restart it with the new UUID filter.
+  ///
+  /// Does not begin scanning on its own — host apps register profiles at
+  /// startup, well before any "Start" action. Scanning kicks off only
+  /// after `start(...)` is called.
   func updateAccessoryProfiles(_ profiles: [AccessoryProfile]) {
     self.accessoryProfiles = profiles
-    wantsScan = !profiles.isEmpty
+    wantsScan = started && !profiles.isEmpty
     guard let c = central else { return }
     if c.state == .poweredOn, c.isScanning {
       c.stopScan()
@@ -266,11 +288,22 @@ final class BleOob: NSObject {
 
 extension BleOob: CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
+    if central.state != .unknown, !pendingStateCallbacks.isEmpty {
+      let pending = pendingStateCallbacks
+      pendingStateCallbacks.removeAll()
+      pending.forEach { $0() }
+    }
     switch central.state {
     case .poweredOn:
       attemptScanIfReady()
     case .poweredOff, .unauthorized, .unsupported:
-      callback?.onError("Bluetooth central not available: \(central.state.rawValue)")
+      // Only surface as an error once `start(...)` has been called —
+      // otherwise the eager init in `init()` would push spurious
+      // "Bluetooth not available" errors to consumers that only use
+      // iOS↔iOS peer mode (which doesn't need BLE).
+      if started {
+        callback?.onError("Bluetooth central not available: \(central.state.rawValue)")
+      }
     default:
       break
     }

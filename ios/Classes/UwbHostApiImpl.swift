@@ -296,26 +296,25 @@ final class UwbHostApiImpl: NSObject, UwbHostApi {
       return NISession.deviceCapabilities.supportsPreciseDistanceMeasurement
       #endif
     }()
-    // CBCentralManager.authorization is the only programmatic Bluetooth
-    // signal iOS exposes; powered-on/off is async via state callbacks.
-    // Use the BleOob singleton's manager so we don't spin up a new one
-    // (which would trigger a duplicate "would like to use Bluetooth"
-    // prompt). State `.poweredOn` is the only "ready" value; everything
-    // else (resetting, unauthorized, unsupported, unknown) is treated as
-    // not enabled — the host app should re-poll on Bluetooth state
-    // change.
-    let bt = ble.isPoweredOn
+    // BleOob instantiates its CBCentralManager eagerly in `init()`, but
+    // `centralManagerDidUpdateState` is async — on cold start the state
+    // may still be `.unknown` for a runloop turn or two. Defer the
+    // readiness reply until CB has reported the radio's actual state, so
+    // the host app doesn't get a spurious `bluetoothEnabled: false`.
+    //
     // iOS has no equivalent to Android's runtime-permission grants for
     // BLE / Nearby Interaction — the OS prompts on first use and there's
     // no API to query the result up-front. Report `permissionsGranted`
-    // as true so the host app branches on bluetoothEnabled / uwbAvailable
-    // instead.
-    completion(.success(UwbReadiness(
-      uwbAvailable: uwb,
-      bluetoothEnabled: bt,
-      permissionsGranted: true,
-      missingPermissions: []
-    )))
+    // as true so the host app branches on `bluetoothEnabled` /
+    // `uwbAvailable` instead.
+    ble.onceStateResolved { [ble] in
+      completion(.success(UwbReadiness(
+        uwbAvailable: uwb,
+        bluetoothEnabled: ble.isPoweredOn,
+        permissionsGranted: true,
+        missingPermissions: []
+      )))
+    }
   }
 
   func getDeviceCapabilities(
