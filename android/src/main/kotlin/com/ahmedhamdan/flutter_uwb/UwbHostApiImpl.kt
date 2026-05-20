@@ -91,8 +91,18 @@ class UwbHostApiImpl(
                 discovered[id] = device
                 if (isNew) flutterApi.onDeviceFound(device) {}
             }
-            override fun onIncomingRequest(id: String, name: String) {
+            override fun onIncomingRequest(id: String, name: String, peerToken: ByteArray) {
                 Log.d(tag, "Incoming BLE request from $name")
+                // A peer that completes the ECDH handshake on the symmetric
+                // service is always an Android peer; surface it (mirrors the
+                // onDeviceFound path and the iOS PeerOob impl) so the host
+                // app's incomingRequests stream can gate accept/decline.
+                val isNew = !discovered.containsKey(id)
+                val device = discovered[id]
+                    ?: UwbDevice(id = id, name = name, platform = "android")
+                discovered[id] = device
+                if (isNew) flutterApi.onDeviceFound(device) {}
+                flutterApi.onIncomingRequest(device, TokenPayload(bytes = peerToken)) {}
             }
             override fun onConnected(id: String, name: String) {
                 Log.d(tag, "BLE tokens exchanged with $name")

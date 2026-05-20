@@ -55,6 +55,7 @@ void main() {
       expect(uwb.rangingSamples, isA<Stream<RangingSample>>());
       expect(uwb.peerLost, isA<Stream<String>>());
       expect(uwb.rangingErrors, isA<Stream<RangingErrorEvent>>());
+      expect(uwb.incomingRequests, isA<Stream<IncomingRequest>>());
     });
 
     test('isUwbAvailable forwards true through the Pigeon channel', () async {
@@ -359,6 +360,32 @@ void main() {
       expect(received, hasLength(1));
       expect(received.first.distanceMeters, 1.5);
       expect(received.first.deviceId, 'peer');
+      await sub.cancel();
+    });
+
+    test('onIncomingRequest pushes into the incomingRequests stream', () async {
+      const codec = pigeon.UwbFlutterApi.pigeonChannelCodec;
+      final received = <IncomingRequest>[];
+      final sub = FlutterUwb.instance.incomingRequests.listen(received.add);
+
+      final device =
+          UwbDevice(id: 'peer-1', name: 'Phone B', platform: 'android');
+      final token = Uint8List.fromList([9, 8, 7, 6]);
+      final msg = codec.encodeMessage(<Object?>[
+        device,
+        pigeon.TokenPayload(bytes: token),
+      ]);
+      await binaryMessenger.handlePlatformMessage(
+        _flutterChan('onIncomingRequest'),
+        msg,
+        (_) {},
+      );
+
+      await Future<void>.delayed(Duration.zero);
+      expect(received, hasLength(1));
+      expect(received.first.device.id, 'peer-1');
+      expect(received.first.device.platform, 'android');
+      expect(received.first.peerToken, equals(token));
       await sub.cancel();
     });
 
