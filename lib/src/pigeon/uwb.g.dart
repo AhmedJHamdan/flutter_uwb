@@ -239,8 +239,10 @@ class RangingOptions {
   /// Requires `NSCameraUsageDescription` in the host app's Info.plist.
   bool cameraAssist;
 
-  /// iOS 17.4+ accessory only. Enables
-  /// `NINearbyAccessoryConfiguration.isExtendedDistanceMeasurementEnabled`.
+  /// iOS 17+ phone-to-phone only. Enables
+  /// `NINearbyPeerConfiguration.isExtendedDistanceMeasurementEnabled`,
+  /// trading direction (AoA) for range; mutually exclusive with
+  /// [cameraAssist].
   bool extendedDistance;
 
   Object encode() {
