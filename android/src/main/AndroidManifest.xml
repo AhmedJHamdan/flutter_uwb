@@ -5,10 +5,17 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
     <uses-feature android:name="android.hardware.uwb"           android:required="false"/>
 
-    <!-- Pre-Android-12 BLE permissions -->
-    <uses-permission android:name="android.permission.BLUETOOTH"            android:maxSdkVersion="30"/>
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"      android:maxSdkVersion="30"/>
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30"/>
+    <!--
+        Pre-Android-12 BLE permissions (BLUETOOTH, BLUETOOTH_ADMIN,
+        ACCESS_FINE_LOCATION) are deliberately NOT declared here. A library
+        manifest must never attach android:maxSdkVersion to a permission:
+        the manifest merger copies that attribute onto the app's own
+        declaration, silently stripping the permission on newer Android
+        versions (e.g. an app using geolocator lost ACCESS_FINE_LOCATION
+        on Android 12+ and could only request approximate location).
+        Apps that support Android 11 or lower add these three permissions
+        to their own manifest — see the README's Permissions section.
+    -->
 
     <!-- Android 12+ runtime BLE permissions -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"

@@ -137,7 +137,30 @@ Full API docs: <https://pub.dev/documentation/flutter_uwb/latest/>
 <details>
 <summary><b>Android</b></summary>
 
-The plugin manifest already declares the required `<uses-permission>` entries. Your app only needs to **request** them at runtime:
+The plugin manifest declares the Android 12+ permissions
+(`BLUETOOTH_SCAN`, `BLUETOOTH_ADVERTISE`, `BLUETOOTH_CONNECT`,
+`UWB_RANGING`). If your app supports Android 11 or lower, additionally
+declare the legacy BLE permissions in your own
+`android/app/src/main/AndroidManifest.xml`:
+
+```xml
+<uses-permission android:name="android.permission.BLUETOOTH"
+    android:maxSdkVersion="30"/>
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+    android:maxSdkVersion="30"/>
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+    android:maxSdkVersion="30"/>
+```
+
+> **Note:** if your app also needs precise location on Android 12+
+> (e.g. via `geolocator`), declare `ACCESS_FINE_LOCATION` **without**
+> `android:maxSdkVersion` — the attribute would remove the permission
+> from the merged manifest on newer Android versions. The plugin
+> deliberately does not declare these legacy permissions itself for the
+> same reason: a library-side `maxSdkVersion` leaks onto the app's own
+> declaration during the manifest merge.
+
+At runtime, request:
 
 | API level | Runtime permissions                                                              |
 | --------- | -------------------------------------------------------------------------------- |
