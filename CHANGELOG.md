@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.0.2
+
+### Fixed
+
+- **Importing the plugin no longer downgrades other packages' location
+  permission to approximate on Android 12+.** The plugin manifest declared
+  `ACCESS_FINE_LOCATION` (and legacy `BLUETOOTH`/`BLUETOOTH_ADMIN`) with
+  `android:maxSdkVersion="30"`. The Android manifest merger copies that
+  attribute onto the app's own declaration, so any app that also needed
+  precise location — e.g. via `geolocator` — silently lost
+  `ACCESS_FINE_LOCATION` on Android 12+ and could only request
+  approximate location. The plugin now declares only the Android 12+
+  permission set; apps that support Android 11 or lower add the three
+  legacy permissions to their own manifest (see the README's Permissions
+  section).
+- Corrected the `RangingOptions.extendedDistance` doc comment: the flag
+  applies to phone-to-phone sessions via `NINearbyPeerConfiguration` on
+  iOS 17+ (not accessories via `NINearbyAccessoryConfiguration`), trades
+  direction (AoA) for range, and is mutually exclusive with
+  `cameraAssist`.
+
+### Changed
+
+- Example app: the Precision Find arrow now follows direction updates
+  with a critically damped spring instead of restarting a tween per
+  sample, takes the shortest arc across the ±180° wrap, and holds a lone
+  outlier azimuth sample for one update before believing it, suppressing
+  UWB multipath spikes.
+
 ## 1.0.1
 
 ### Fixed
